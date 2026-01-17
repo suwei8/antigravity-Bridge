@@ -5,8 +5,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"antigravity-bridge/automation"
@@ -16,14 +18,23 @@ import (
 	tb "gopkg.in/tucnak/telebot.v2"
 )
 
+// MsgBuffer aggregates messages for a specific chat
+type MsgBuffer struct {
+	Timer    *time.Timer
+	Messages []*tb.Message
+}
+
+var (
+	bufferMap  = make(map[int64]*MsgBuffer) // Send by ChatID
+	bufferLock sync.Mutex
+)
+
 func main() {
 	// IMPORTANT: All logs must go to Stderr because Stdout is MCP
-	// DEBUG: Force log to file to check startup
 	f, err := os.OpenFile("/tmp/gravity_main_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		log.SetOutput(f)
 	} else {
-		// Fallback to stderr if file fails
 		log.SetOutput(os.Stderr)
 	}
 
@@ -47,25 +58,20 @@ func main() {
 	}
 
 	// Setup MCP Server
-	// Define the function that MCP calls to send to Telegram
 	sendToTg := func(chatIDStr, text string) error {
 		cid, err := strconv.ParseInt(chatIDStr, 10, 64)
 		if err != nil {
 			return err
 		}
-		// We need a recipient object
 		chat := &tb.Chat{ID: cid}
-
-		// Handle escaped newlines from JSON/LLM specifically
 		safeText := strings.ReplaceAll(text, "\\n", "\n")
-
 		_, err = b.Send(chat, safeText)
 		return err
 	}
 
 	mcpServer := mcp.NewServer(sendToTg)
 
-	// Get executable directory to locate templates (Robust against CWD)
+	// Get executable directory
 	ex, err := os.Executable()
 	if err != nil {
 		log.Fatal(err)
@@ -75,51 +81,121 @@ func main() {
 
 	log.Printf("Started. Binary: %s, TemplatesDir: %s, DISPLAY: %s", ex, templatesDir, os.Getenv("DISPLAY"))
 
-	b.Handle(tb.OnText, func(m *tb.Message) {
-		msg := m.Text
-		log.Printf("Received text from %d: %s", m.Chat.ID, msg)
+	// Unified Message Handler (Buffers EVERYTHING by ChatID)
+	handleMessage := func(m *tb.Message) {
+		bufferLock.Lock()
+		defer bufferLock.Unlock()
 
-		// Inject Context
-		contentWithContext := "From Telegram [" + strconv.FormatInt(m.Chat.ID, 10) + "]: " + msg
-
-		go func() {
-			automation.FullWorkflow(contentWithContext, templatesDir, func(status string) {
-				// Visual update loop logic "Thinking..."
-				b.Send(m.Sender, status)
-			})
-		}()
-	})
-
-	b.Handle(tb.OnPhoto, func(m *tb.Message) {
-		log.Printf("Received photo from %d", m.Chat.ID)
-
-		// Download photo
-		file := &tb.File{FileID: m.Photo.FileID}
-		localPath := filepath.Join(os.TempDir(), fmt.Sprintf("tg_photo_%d.png", time.Now().UnixNano()))
-
-		err := b.Download(file, localPath)
-		if err != nil {
-			log.Printf("Error downloading photo: %v", err)
-			b.Send(m.Chat, "Error downloading photo: "+err.Error())
-			return
+		chatID := m.Chat.ID
+		buf, exists := bufferMap[chatID]
+		if !exists {
+			buf = &MsgBuffer{
+				Messages: []*tb.Message{},
+			}
+			bufferMap[chatID] = buf
 		}
 
-		// Run Automation with Image
-		go func() {
-			defer os.Remove(localPath) // Clean up after use
-			automation.FullWorkflowImage(localPath, templatesDir, func(status string) {
-				b.Send(m.Sender, status)
+		// Append message
+		buf.Messages = append(buf.Messages, m)
+		log.Printf("Buffered message from %d. Total: %d", chatID, len(buf.Messages))
+
+		// Reset/Start Timer
+		if buf.Timer != nil {
+			buf.Timer.Stop()
+		}
+
+		// Wait 2 seconds quiescence
+		buf.Timer = time.AfterFunc(2*time.Second, func() {
+			bufferLock.Lock()
+			messages := buf.Messages
+			delete(bufferMap, chatID)
+			bufferLock.Unlock()
+
+			log.Printf("Processing Batch for Chat %d with %d messages", chatID, len(messages))
+			if len(messages) == 0 {
+				return
+			}
+
+			// Sort by time? Usually appended in order of receipt.
+			// Telebot doesn't guarantee generic message order perfectly but receipt order is usually fine.
+			// Just in case, sort by ID (which is incremental in Telegram)
+			sort.Slice(messages, func(i, j int) bool {
+				return messages[i].ID < messages[j].ID
 			})
-		}()
-	})
+
+			// Collect Content
+			var imagePaths []string
+			var txtParts []string
+
+			for i, msg := range messages {
+				// Text
+				if msg.Text != "" {
+					txtParts = append(txtParts, msg.Text)
+				} else if msg.Caption != "" {
+					txtParts = append(txtParts, msg.Caption)
+				}
+
+				// Media
+				var fID string
+				var fExt string = ".png"
+
+				if msg.Photo != nil {
+					fID = msg.Photo.FileID
+				} else if msg.Document != nil {
+					fID = msg.Document.FileID
+					if filepath.Ext(msg.Document.FileName) != "" {
+						fExt = filepath.Ext(msg.Document.FileName)
+					}
+					// Check Prefix if needed (skipped for now to be generous)
+				}
+
+				if fID != "" {
+					// Download
+					file := &tb.File{FileID: fID}
+					localPath := filepath.Join(os.TempDir(), fmt.Sprintf("tg_batch_%d_%d%s", chatID, i, fExt))
+					if err := b.Download(file, localPath); err == nil {
+						imagePaths = append(imagePaths, localPath)
+					} else {
+						log.Printf("Error downloading item: %v", err)
+					}
+				}
+			}
+
+			fullText := strings.Join(txtParts, "\n")
+			contentWithContext := "From Telegram [" + strconv.FormatInt(messages[0].Chat.ID, 10) + "]: " + fullText
+			if len(imagePaths) > 0 {
+				contentWithContext += " (Group/Attachments)"
+			}
+
+			go func() {
+				defer func() {
+					for _, p := range imagePaths {
+						os.Remove(p)
+					}
+				}()
+
+				if len(imagePaths) > 0 {
+					automation.FullWorkflowMediaGroup(imagePaths, contentWithContext, templatesDir, func(status string) {
+						b.Send(messages[0].Sender, status)
+					})
+				} else {
+					// Text Only
+					automation.FullWorkflow(contentWithContext, templatesDir, func(status string) {
+						b.Send(messages[0].Sender, status)
+					})
+				}
+			}()
+		})
+	}
+
+	// Register Handlers
+	b.Handle(tb.OnText, handleMessage)
+	b.Handle(tb.OnPhoto, handleMessage)
+	b.Handle(tb.OnDocument, handleMessage)
 
 	log.Println("Antigravity Bridge Bot & MCP Server Starting...")
 
-	// Start Bot in Goroutine
 	go b.Start()
-
-	log.Printf("Started. DISPLAY: %s", os.Getenv("DISPLAY"))
-
-	// Start MCP Server (Blocking Stdio)
-	mcpServer.Start()
+	go mcpServer.Start()
+	select {}
 }

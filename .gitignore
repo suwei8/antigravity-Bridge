@@ -8,8 +8,10 @@ gravity-bridge-*
 # Logs
 *.log
 
-# Screenshots
-*.png
+# Screenshots/Temp Images
+monitor_*.png
+tg_*.png
+check_*.png
 
 # Go artifacts
 go.sum

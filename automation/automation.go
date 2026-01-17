@@ -272,6 +272,61 @@ func FullWorkflowImage(imagePath, templatesDir string, sendStatus func(string)) 
 	}
 }
 
+func FullWorkflowMediaGroup(imagePaths []string, text string, templatesDir string, sendStatus func(string)) {
+	// 1. Find Input Box
+	inputBoxImg := fmt.Sprintf("%s/input_box.png", templatesDir)
+	success, debugLog := FindAndClick(inputBoxImg)
+	if !success {
+		log.Println("Could not find input_box.png")
+		sendStatus("Error [v2]: input_box.png (media group) not found. Info: " + debugLog)
+		return
+	}
+
+	// 2. Process Images
+	for i, imgPath := range imagePaths {
+		log.Printf("Processing image %d/%d: %s", i+1, len(imagePaths), imgPath)
+		if err := SetClipboardImage(imgPath); err != nil {
+			log.Printf("Error setting clipboard image %s: %v", imgPath, err)
+			sendStatus(fmt.Sprintf("Error setting clipboard image %d: %v", i+1, err))
+			continue
+		}
+		
+		// Paste
+		time.Sleep(500 * time.Millisecond) // Wait for clipboard to set
+		log.Println("Pasting image...")
+		exec.Command("xdotool", "key", "ctrl+v").Run()
+		time.Sleep(500 * time.Millisecond) // Wait for paste to render
+	}
+
+	// 3. Process Text
+	if text != "" {
+		log.Printf("Processing text caption")
+		if err := SetClipboard(text); err != nil {
+			log.Printf("Error setting clipboard text: %v", err)
+			sendStatus("Error setting clipboard text: " + err.Error())
+		} else {
+			time.Sleep(300 * time.Millisecond)
+			log.Println("Pasting text...")
+			exec.Command("xdotool", "key", "ctrl+v").Run()
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+
+	// 4. Submit
+	log.Println("Waiting for uploads to stabilize...")
+	time.Sleep(2 * time.Second) // Wait for images to be fully processed by IDE
+	log.Println("Sending Enter...")
+	exec.Command("xdotool", "key", "Return").Run()
+
+	// 5. Monitor
+	replyingImg := fmt.Sprintf("%s/Replying.png", templatesDir)
+	acceptImg := fmt.Sprintf("%s/accept_button.png", templatesDir)
+	
+	MonitorProcess(replyingImg, acceptImg, func() {
+		sendStatus("Thinking...")
+	})
+}
+
 // --- Image Processing Helpers ---
 
 func loadImage(path string) (image.Image, error) {
