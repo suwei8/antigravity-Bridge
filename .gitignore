@@ -1,0 +1,15 @@
+# Binaries
+gravity-bridge
+gravity-bridge-*
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# Screenshots
+*.png
+
+# Go artifacts
+go.sum
