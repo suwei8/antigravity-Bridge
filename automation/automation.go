@@ -8,12 +8,22 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 )
 
-// SetClipboard copies text to the system clipboard using xclip
+// SetClipboard sets content to X11 clipboard
 func SetClipboard(text string) error {
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo -n '%s' | xclip -selection clipboard", text))
+	cmd := exec.Command("xclip", "-selection", "clipboard")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
+// SetClipboardImage sets an image file to X11 clipboard
+func SetClipboardImage(imagePath string) error {
+	// xclip -selection clipboard -t image/png -i image.png
+	cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "image/png", "-i", imagePath)
 	return cmd.Run()
 }
 
@@ -86,18 +96,60 @@ func PasteAndSubmit() {
 func MonitorProcess(replyingImg, acceptImg string, onThinking func()) {
 	log.Println("MonitorProcess: Starting loop...")
 	
-	// Wait a bit for the UI to update after paste
-	time.Sleep(1 * time.Second)
+	// Phase 1: Wait for Replying to appear (Max 10s)
+	log.Println("MonitorProcess: Waiting for 'Replying' to appear...")
+	waitTicker := time.NewTicker(500 * time.Millisecond)
+	waitTimeout := time.After(10 * time.Second)
+	appeared := false
+	
+	WaitForLoop:
+	for {
+		select {
+		case <-waitTimeout:
+			log.Println("MonitorProcess: 'Replying' never appeared. Assuming finished or missed.")
+			waitTicker.Stop()
+			return
+		case <-waitTicker.C:
+			replyTmpl, err := loadImage(replyingImg)
+			if err != nil {
+				log.Printf("Error loading answering tmpl: %v", err)
+				waitTicker.Stop()
+				return 
+			}
+			
+			// Take quick screenshot
+			exec.Command("scrot", "monitor_check.png").Run()
+			screenImg, err := loadImage("monitor_check.png")
+			if err != nil {
+				os.Remove("monitor_check.png") // Ensure cleanup even on error
+				continue
+			}
+			os.Remove("monitor_check.png")
+			
+			_, _, found := findImageInImage(screenImg, replyTmpl)
+			if found {
+				log.Println("MonitorProcess: 'Replying' detected! Entering monitor loop.")
+				appeared = true
+				waitTicker.Stop()
+				break WaitForLoop
+			}
+		}
+	}
 
+	if !appeared {
+		return
+	}
+
+	// Phase 2: Monitor Loop
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	timeout := time.After(120 * time.Second) // Safety timeout
+	timeout := time.After(300 * time.Second) // Safety timeout increased
 	lastThinkingTime := time.Time{}
 	
 	// Retry counter for "Replying" not found (to avoid exiting on flicker)
 	notFoundCount := 0
-	const maxNotFound = 3 
+	const maxNotFound = 5 // Increased tolerance
 
 	for {
 		select {
@@ -149,15 +201,13 @@ func MonitorProcess(replyingImg, acceptImg string, onThinking func()) {
 				lastThinkingTime = time.Now()
 			}
 			
-			// 4. Logic B: Find and Click Accept
+			// 4. Logic B: Click Accept Button
 			acceptTmpl, err := loadImage(acceptImg)
 			if err == nil {
-				ax, ay, aFound := findImageInImage(screenImg, acceptTmpl)
-				if aFound {
-					log.Printf("MonitorProcess: Found Accept Button at %d,%d. Clicking...", ax, ay)
-					exec.Command("xdotool", "mousemove", fmt.Sprintf("%d", ax+10), fmt.Sprintf("%d", ay+10)).Run()
-					time.Sleep(100 * time.Millisecond) // micro-wait
-					exec.Command("xdotool", "click", "1").Run()
+				x, y, found := findImageInImage(screenImg, acceptTmpl)
+				if found {
+					log.Println("MonitorProcess: Found Accept button. Clicking...")
+					exec.Command("xdotool", "mousemove", strconv.Itoa(x), strconv.Itoa(y), "click", "1").Run()
 					// We do NOT return here, we continue monitoring until Replying disappears
 				}
 			}
@@ -191,6 +241,34 @@ func FullWorkflow(text string, templatesDir string, sendStatus func(string)) {
 	} else {
 		log.Println("Could not find input_box.png")
 		sendStatus("Error [v2]: input_box.png not found. Info: " + debugLog)
+	}
+}
+
+func FullWorkflowImage(imagePath, templatesDir string, sendStatus func(string)) {
+	// 1. Copy Image to Clipboard
+	if err := SetClipboardImage(imagePath); err != nil {
+		log.Printf("Error setting clipboard image: %v", err)
+		sendStatus("Error setting clipboard image: " + err.Error())
+		return
+	}
+
+	// 2. Find Input Box
+	inputBoxImg := fmt.Sprintf("%s/input_box.png", templatesDir)
+	success, debugLog := FindAndClick(inputBoxImg)
+	if success {
+		// 3. Paste
+		PasteAndSubmit()
+		
+		// 4. Monitor Process
+		replyingImg := fmt.Sprintf("%s/Replying.png", templatesDir)
+		acceptImg := fmt.Sprintf("%s/accept_button.png", templatesDir)
+		
+		MonitorProcess(replyingImg, acceptImg, func() {
+			sendStatus("Thinking...")
+		})
+	} else {
+		log.Println("Could not find input_box.png")
+		sendStatus("Error [v2]: input_box.png (img flow) not found. Info: " + debugLog)
 	}
 }
 
