@@ -48,8 +48,10 @@ deploy() {
     check_dependencies
 
     info "正在下载最新版本..."
-    if curl -L -o "$APP_NAME" "$DOWNLOAD_URL"; then
-        chmod +x "$APP_NAME"
+    local tmp_file="${APP_NAME}.tmp"
+    if curl -L -o "$tmp_file" "$DOWNLOAD_URL"; then
+        chmod +x "$tmp_file"
+        mv -f "$tmp_file" "$APP_NAME"
         info "下载成功并通过验证。"
         
         # 检查 .env
