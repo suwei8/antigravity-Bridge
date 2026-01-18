@@ -109,9 +109,9 @@ EOF
 
         cat > "$GEMINI_CONFIG_FILE" << EOF
 "你在 IDE 中工作，你必须使用中文语言和用户交流，在完成用户请求的最终答复后，你必须遵守以下规则：
-1. 立即调用 MCP 工具 \`telegram\`，将完整最终答复发送到 Telegram Bot。
-2. 如果内容较长，拆分为多次调用 \`telegram\` ，优先按段落并符合Telegram阅读的代码块，确保代码块结构完整。
-3.调用MCP 工具 \`telegram\`完成回复后，禁止在IDE对话中重复输出全文，只输出一句： ok"
+1. 立即调用 MCP 工具 \`antigravity-bridge\`，将完整最终答复发送到 Telegram Bot。
+2. 如果内容较长，拆分为多次调用 \`antigravity-bridge\` ，优先按段落并符合Telegram阅读的代码块，确保代码块结构完整。
+3.调用MCP 工具 \`antigravity-bridge\`完成回复后，禁止在IDE对话中重复输出全文，只输出一句： ok"
 EOF
         info "GEMINI 规则已更新: $GEMINI_CONFIG_FILE"
         
