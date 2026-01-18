@@ -25,6 +25,14 @@ build/
 # Logs
 *.log
 /tmp/
+app.log
+app.pid
+
+# Binary
+antigravity-bridge
+dist/
+build/
+*.spec
 
 # Screenshots
 .screenshot*.png

@@ -48,6 +48,41 @@ source venv/bin/activate
 python main.py
 ```
 
+## 二进制版本一键部署
+
+项目提供了 `manage.sh` 脚本，用于自动从 GitHub Release 下载最新的二进制版本并进行管理。
+
+### 1. 下载管理脚本
+
+```bash
+wget https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
+chmod +x manage.sh
+```
+
+### 2. 功能菜单
+
+直接运行脚本即可看到功能菜单：
+
+```bash
+./manage.sh
+```
+
+### 3. 子命令使用
+
+- **部署/更新**: `./manage.sh deploy` (自动下载最新版本并安装依赖)
+- **启动**: `./manage.sh start`
+- **停止**: `./manage.sh stop`
+- **重启**: `./manage.sh restart`
+- **查看日志**: `./manage.sh logs`
+
+### 4. 目录结构
+
+部署后将在当前目录下生成：
+- `antigravity-bridge`: 可执行文件
+- `.env`: 配置文件
+- `app.log`: 运行日志
+- `app.pid`: 进程 ID 文件
+
 ## 项目结构
 
 ```
