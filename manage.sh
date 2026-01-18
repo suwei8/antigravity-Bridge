@@ -53,7 +53,12 @@ deploy() {
         info "下载成功并通过验证。"
         
         # 检查 .env
-        if [ ! -f .env ]; then
+        if [ -f .env ]; then
+            info "检测到现有 .env 配置文件"
+            source .env
+            token=$TELEGRAM_BOT_TOKEN
+            chat_id=$TELEGRAM_CHAT_ID
+        else
             echo "未检测到 .env 配置文件"
             echo "请输入您的 Telegram Bot Token:"
             read -r token
@@ -66,6 +71,44 @@ TELEGRAM_CHAT_ID=$chat_id
 EOF
             info ".env 配置文件已创建。"
         fi
+
+        # 写入 MCP 配置
+        info "正在配置 MCP..."
+        MCP_CONFIG_DIR="/home/sw/.gemini/antigravity"
+        MCP_CONFIG_FILE="$MCP_CONFIG_DIR/mcp_config.json"
+        APP_PATH="$(pwd)/$APP_NAME"
+
+        mkdir -p "$MCP_CONFIG_DIR"
+
+        cat > "$MCP_CONFIG_FILE" << EOF
+{
+  "mcpServers": {
+    "antigravity-bridge": {
+      "command": "$APP_PATH",
+      "args": [],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "$token",
+        "TELEGRAM_CHAT_ID": "$chat_id",
+        "DISPLAY": ":0"
+      }
+    }
+  }
+}
+EOF
+        info "MCP 配置已写入: $MCP_CONFIG_FILE"
+
+        # 写入 GEMINI 规则
+        info "正在更新 GEMINI 规则..."
+        GEMINI_CONFIG_FILE="/home/sw/.gemini/GEMINI.md"
+        mkdir -p "$(dirname "$GEMINI_CONFIG_FILE")"
+
+        cat > "$GEMINI_CONFIG_FILE" << EOF
+"你在 IDE 中工作，你必须使用中文语言和用户交流，在完成用户请求的最终答复后，你必须遵守以下规则：
+1. 立即调用 MCP 工具 \`telegram\`，将完整最终答复发送到 Telegram Bot。
+2. 如果内容较长，拆分为多次调用 \`telegram\` ，优先按段落并符合Telegram阅读的代码块，确保代码块结构完整。
+3.调用MCP 工具 \`telegram\`完成回复后，禁止在IDE对话中重复输出全文，只输出一句： ok"
+EOF
+        info "GEMINI 规则已更新: $GEMINI_CONFIG_FILE"
         
         info "部署完成！可以使用 'bash $0 start' 启动。"
     else
