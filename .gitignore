@@ -1,17 +1,38 @@
-# Binaries
-gravity-bridge
-gravity-bridge-*
+# Virtual Environment
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
 
 # Environment
 .env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Logs
 *.log
+/tmp/
 
-# Screenshots/Temp Images
-monitor_*.png
-tg_*.png
-check_*.png
+# Screenshots
+.screenshot*.png
 
-# Go artifacts
-go.sum
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py
+debug_*.py

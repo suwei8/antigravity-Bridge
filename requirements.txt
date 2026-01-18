@@ -1,0 +1,23 @@
+# Antigravity-Bridge Python Dependencies
+# Compatible with Ubuntu 20.04 LTS (aarch64)
+
+# GUI Automation with fuzzy image matching
+pyautogui>=0.9.54
+
+# Advanced image processing (fallback for complex scenarios)
+opencv-python-headless>=4.5.0
+
+# Telegram Bot API
+python-telegram-bot>=13.7,<14.0
+
+# Environment configuration
+python-dotenv>=0.19
+
+# Image processing
+Pillow>=8.0
+
+# Cross-platform clipboard
+pyperclip>=1.8
+
+# NumPy (OpenCV dependency)
+numpy>=1.19
