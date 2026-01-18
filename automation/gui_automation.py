@@ -159,6 +159,41 @@ def find_input_box(templates_dir: str, save_screenshot: bool = False) -> dict:
     return smart_find_image(image_path, save_screenshot=save_screenshot)
 
 
+def activate_window(window_name_pattern: str = "antigravity") -> bool:
+    """
+    Activate window by name pattern using xdotool.
+    
+    Args:
+        window_name_pattern: Window name substring to search for
+        
+    Returns:
+        True if window found and activated, False otherwise
+    """
+    try:
+        # Search for window ID
+        # Only search for visible windows
+        cmd = ['xdotool', 'search', '--onlyvisible', '--name', window_name_pattern]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            # Get the last window ID (usually the most relevant one if multiple)
+            window_ids = result.stdout.strip().split('\n')
+            target_id = window_ids[-1]
+            
+            # Activate window
+            # --sync waits for the window to be active
+            subprocess.run(['xdotool', 'windowactivate', '--sync', target_id], check=True)
+            logger.info(f"Activated window '{window_name_pattern}' (ID: {target_id})")
+            time.sleep(0.5) # Wait for animation/focus
+            return True
+        else:
+            logger.warning(f"Window '{window_name_pattern}' not found")
+            return False
+    except Exception as e:
+        logger.error(f"Error activating window '{window_name_pattern}': {e}")
+        return False
+
+
 def click_input_box(
     templates_dir: str,
     offset_x: int = -20,
@@ -168,6 +203,7 @@ def click_input_box(
     """
     查找并点击输入框 - 公共工具函数
     
+    自动将 'antigravity' 窗口置顶，防止被遮挡。
     使用 xdotool 实现可靠的点击操作。
     
     Args:
@@ -178,13 +214,11 @@ def click_input_box(
     
     Returns:
         tuple: (success: bool, debug_info: str)
-    
-    Example:
-        success, info = click_input_box('/path/to/templates')
-        if success:
-            print("点击成功!")
     """
     import subprocess
+    
+    # 1. 尝试激活目标窗口
+    activate_window("antigravity")
     
     image_path = os.path.join(templates_dir, "input_box.png")
     
