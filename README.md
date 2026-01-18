@@ -126,6 +126,41 @@ antigravity-Bridge/
 - `text` (必填): 消息内容
 - `chat_id` (可选): 目标 Chat ID
 
+- `chat_id` (可选): 目标 Chat ID
+
+## MCP 集成指南
+
+Antigravity-Bridge 本身就是一个 MCP (Model Context Protocol) Server，可以被 Claude Desktop、Cursor 等支持 MCP 的 AI 客户端调用。
+
+### 配置方法 (以 Claude Desktop 为例)
+
+编辑配置文件 (通常位于 `~/Library/Application Support/Claude/claude_desktop_config.json`)：
+
+```json
+{
+  "mcpServers": {
+    "antigravity-bridge": {
+      "command": "/绝对路径/antigravity-bridge",
+      "args": [],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "你的BotToken",
+        "TELEGRAM_CHAT_ID": "你的ChatID",
+        "DISPLAY": ":0"
+      }
+    }
+  }
+}
+```
+
+> **注意**：如果不使用 `env` 字段，请确保二进制文件同级目录下存在正确的 `.env` 文件，并且 MCP 客户端的工作目录正确。推荐直接在 `env` 中配置。
+
+### 注意事项
+
+- **互斥运行**：当作为 MCP Server 使用时（即被 AI 客户端启动），**不要**同时通过 `manage.sh start` 运行后台进程。因为两个进程同时连接 Telegram Bot 会导致冲突和消息丢失。
+- **功能差异**：
+  - `manage.sh start` 模式：作为独立 Bot 运行，监听消息并执行 GUI 自动化。
+  - MCP 模式：既可以作为工具被 AI 调用发送消息，也可以接收消息（取决于客户端生命周期）。但通常主要用于让 AI **控制**发送消息。
+
 ## 许可证
 
 MIT License
