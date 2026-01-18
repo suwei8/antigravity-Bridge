@@ -690,22 +690,27 @@ def full_workflow_media_group(
     text: str,
     templates_dir: str,
     send_status: Callable[[str], None],
-    confidence: float = 0.8
+    confidence: float = 0.8,
+    file_paths: List[str] = None
 ):
     """
-    执行完整的多图+文字消息工作流:
+    执行完整的多图+文字+文件消息工作流:
     
     流程:
     1. 对于每张图片:
        - 复制图片到剪贴板
        - click_input_box() 点击输入框
        - Ctrl+V 粘贴
-    2. 复制文字到剪贴板
-    3. click_input_box() 点击输入框
-    4. Ctrl+V 粘贴
-    5. Enter 提交
-    6. find_replying() 检测 Replying 状态
-    7. 如果找到 Replying，每5秒:
+    2. 对于每个文件:
+       - 复制 "@/path/to/file" 格式到剪贴板
+       - click_input_box() 点击输入框
+       - Ctrl+V 粘贴
+    3. 复制文字到剪贴板
+    4. click_input_box() 点击输入框
+    5. Ctrl+V 粘贴
+    6. Enter 提交
+    7. find_replying() 检测 Replying 状态
+    8. 如果找到 Replying，每5秒:
        - 发送 "思考中..." 状态
        - click_accept_button() 点击 Accept 按钮
     
@@ -715,7 +720,10 @@ def full_workflow_media_group(
         templates_dir: 模板目录路径
         send_status: 发送状态消息的回调函数
         confidence: 图像匹配置信度
+        file_paths: 非图片文件路径列表
     """
+    if file_paths is None:
+        file_paths = []
     # 1. 处理每张图片
     for i, img_path in enumerate(image_paths):
         logger.info(f"处理图片 {i+1}/{len(image_paths)}: {img_path}")
@@ -739,7 +747,34 @@ def full_workflow_media_group(
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
     
-    # 2-4. 处理文字
+    # 2. 处理每个非图片文件（使用 @路径 格式）
+    for i, file_path in enumerate(file_paths):
+        logger.info(f"处理文件 {i+1}/{len(file_paths)}: {file_path}")
+        
+        # 获取绝对路径并构造 @路径 格式
+        abs_path = os.path.abspath(file_path)
+        file_ref = f"@{abs_path}"
+        
+        # 复制 @路径 到剪贴板
+        if not set_clipboard(file_ref):
+            logger.error(f"无法复制文件路径到剪贴板: {file_ref}")
+            send_status(f"错误: 无法复制文件 {i+1}")
+            continue
+        
+        # 点击输入框
+        success, debug_info = click_input_box(templates_dir)
+        if not success:
+            logger.error(f"无法点击输入框: {debug_info}")
+            send_status(f"错误: 无法点击输入框. {debug_info}")
+            return
+        
+        # Ctrl+V 粘贴
+        time.sleep(0.3)
+        logger.info(f"粘贴文件路径: {file_ref}")
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(0.5)
+    
+    # 3-5. 处理文字
     if text:
         logger.info("处理文字内容")
         

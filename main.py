@@ -136,8 +136,12 @@ class AntigravityBridge:
         messages.sort(key=lambda m: m.message_id)
         
         # Collect content
-        image_paths: List[str] = []
+        image_paths: List[str] = []  # 图片文件（png, jpg, gif 等）
+        file_paths: List[str] = []   # 非图片文件（txt, pdf 等）
         text_parts: List[str] = []
+        
+        # 图片扩展名列表
+        IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
         
         for i, msg in enumerate(messages):
             # Text
@@ -149,22 +153,26 @@ class AntigravityBridge:
             # Media
             file_id = None
             file_ext = ".png"
+            is_image = True  # 默认是图片
             
             # 调试: 打印消息类型信息
             logger.info(f"Message {i}: text={bool(msg.text)}, caption={bool(msg.caption)}, "
                        f"photo={bool(msg.photo)}, document={bool(msg.document)}")
             
             if msg.photo:
-                # Get largest photo
+                # Photo 类型一定是图片
                 file_id = msg.photo[-1].file_id
                 logger.info(f"Found photo with file_id: {file_id[:20]}...")
             elif msg.document:
                 file_id = msg.document.file_id
                 logger.info(f"Found document with file_id: {file_id[:20]}...")
                 if msg.document.file_name:
-                    ext = Path(msg.document.file_name).suffix
+                    ext = Path(msg.document.file_name).suffix.lower()
                     if ext:
                         file_ext = ext
+                        # 判断是否为图片
+                        is_image = ext in IMAGE_EXTENSIONS
+                        logger.info(f"Document extension: {ext}, is_image: {is_image}")
             
             if file_id:
                 try:
@@ -172,8 +180,13 @@ class AntigravityBridge:
                     file = self.bot.get_file(file_id)
                     local_path = f"/tmp/tg_batch_{chat_id}_{i}{file_ext}"
                     file.download(local_path)
-                    image_paths.append(local_path)
-                    logger.info(f"Downloaded to: {local_path}")
+                    
+                    if is_image:
+                        image_paths.append(local_path)
+                        logger.info(f"Downloaded image to: {local_path}")
+                    else:
+                        file_paths.append(local_path)
+                        logger.info(f"Downloaded file to: {local_path}")
                 except Exception as e:
                     logger.error(f"Error downloading item: {e}")
         
@@ -181,9 +194,9 @@ class AntigravityBridge:
         content_with_context = f"From Telegram [{chat_id}]: {full_text}"
         
         # 统计日志
-        logger.info(f"收集完成: {len(image_paths)} 张图片, 文字长度={len(full_text)}")
+        logger.info(f"收集完成: {len(image_paths)} 张图片, {len(file_paths)} 个文件, 文字长度={len(full_text)}")
         
-        if image_paths:
+        if image_paths or file_paths:
             content_with_context += " (Group/Attachments)"
         
         # Process in background thread
@@ -197,12 +210,13 @@ class AntigravityBridge:
                     except Exception as e:
                         logger.error(f"Error sending status: {e}")
                 
-                if image_paths:
+                if image_paths or file_paths:
                     full_workflow_media_group(
                         image_paths,
                         content_with_context,
                         self.templates_dir,
-                        send_status
+                        send_status,
+                        file_paths=file_paths  # 传递非图片文件路径
                     )
                 else:
                     full_workflow(
@@ -212,7 +226,7 @@ class AntigravityBridge:
                     )
             finally:
                 # Cleanup downloaded files
-                for path in image_paths:
+                for path in image_paths + file_paths:
                     try:
                         os.remove(path)
                     except OSError:
