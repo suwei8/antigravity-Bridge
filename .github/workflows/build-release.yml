@@ -10,31 +10,32 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm  # GitHub Actions 原生 ARM64 runner
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU for ARM64
-        uses: docker/setup-qemu-action@v3
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
         with:
-          platforms: arm64
+          python-version: '3.8'
 
-      - name: Build ARM64 binary
+      - name: Install system dependencies
         run: |
-          docker run --rm --platform linux/arm64 \
-            -v ${{ github.workspace }}:/app \
-            -w /app \
-            python:3.8-slim-bullseye \
-            bash -c "
-              apt-get update && apt-get install -y binutils
-              pip install --upgrade pip
-              pip install pyinstaller
-              pip install -r requirements.txt
-              pyinstaller --onefile --name antigravity-bridge main.py
-              chmod +x dist/antigravity-bridge
-            "
+          sudo apt-get update
+          sudo apt-get install -y binutils
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --name antigravity-bridge main.py
+          chmod +x dist/antigravity-bridge
 
       - name: Verify binary
         run: |
@@ -60,6 +61,13 @@ jobs:
             ```bash
             chmod +x antigravity-bridge
             ./antigravity-bridge
+            ```
+            
+            ### 环境变量
+            创建 `.env` 文件:
+            ```env
+            TELEGRAM_BOT_TOKEN=your_bot_token
+            TELEGRAM_CHAT_ID=your_chat_id
             ```
           files: |
             dist/antigravity-bridge
