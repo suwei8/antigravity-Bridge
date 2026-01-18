@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from telegram import Bot, Message, Update
 from telegram.ext import (
     CallbackContext,
+    CommandHandler,
     Filters,
     MessageHandler,
     Updater,
@@ -86,12 +87,54 @@ class AntigravityBridge:
         
         # Register handlers
         dp = self.updater.dispatcher
+        
+        # 命令处理器
+        dp.add_handler(CommandHandler('screen', self.handle_screen_command))
+        
+        # 消息处理器
         dp.add_handler(MessageHandler(
             Filters.text | Filters.photo | Filters.document,
             self.handle_message
         ))
         
         return True
+    
+    def handle_screen_command(self, update: Update, context: CallbackContext):
+        """处理 /screen 命令：截取屏幕并发送图片"""
+        chat_id = update.effective_chat.id
+        logger.info(f"Received /screen command from {chat_id}")
+        
+        try:
+            import subprocess
+            
+            # 截取屏幕
+            screenshot_path = '/tmp/telegram_screenshot.png'
+            result = subprocess.run(
+                ['scrot', screenshot_path],
+                capture_output=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                # 发送图片到 Telegram
+                with open(screenshot_path, 'rb') as photo:
+                    self.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption="📸 当前屏幕截图"
+                    )
+                logger.info(f"Screenshot sent to {chat_id}")
+            else:
+                self.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ 截屏失败"
+                )
+        except Exception as e:
+            logger.error(f"Screenshot error: {e}")
+            self.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ 截屏失败: {e}"
+            )
     
     def handle_message(self, update: Update, context: CallbackContext):
         """Buffer incoming messages and process in batches."""

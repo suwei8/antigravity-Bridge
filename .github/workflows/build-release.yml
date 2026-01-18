@@ -1,0 +1,69 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build ARM64 binary
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/app \
+            -w /app \
+            python:3.8-slim-bullseye \
+            bash -c "
+              apt-get update && apt-get install -y binutils
+              pip install --upgrade pip
+              pip install pyinstaller
+              pip install -r requirements.txt
+              pyinstaller --onefile --name antigravity-bridge main.py
+              chmod +x dist/antigravity-bridge
+            "
+
+      - name: Verify binary
+        run: |
+          file dist/antigravity-bridge
+          ls -lh dist/antigravity-bridge
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Release ${{ github.event.inputs.version }}
+          body: |
+            ## Antigravity-Bridge ${{ github.event.inputs.version }}
+            
+            ### 下载
+            - `antigravity-bridge` - Linux ARM64 (aarch64) 可执行文件
+            
+            ### 系统要求
+            - Ubuntu 20.04+ (aarch64)
+            - 系统依赖: `xdotool`, `scrot`, `xclip`
+            
+            ### 使用方法
+            ```bash
+            chmod +x antigravity-bridge
+            ./antigravity-bridge
+            ```
+          files: |
+            dist/antigravity-bridge
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
