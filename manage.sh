@@ -82,6 +82,9 @@ EOF
 
         mkdir -p "$MCP_CONFIG_DIR"
 
+        # 获取当前 DISPLAY，默认为 :0
+        current_display="${DISPLAY:-:0}"
+
         cat > "$MCP_CONFIG_FILE" << EOF
 {
   "mcpServers": {
@@ -91,7 +94,7 @@ EOF
       "env": {
         "TELEGRAM_BOT_TOKEN": "$token",
         "TELEGRAM_CHAT_ID": "$chat_id",
-        "DISPLAY": ":0"
+        "DISPLAY": "$current_display"
       }
     }
   }
