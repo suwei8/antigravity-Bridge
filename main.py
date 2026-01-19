@@ -318,7 +318,7 @@ class AntigravityBridge:
         
         logger.info("Antigravity Bridge Bot & MCP Server Starting...")
         
-        # Start bot in background
+        # Start bot in background (Service Binary w/ Polling)
         self.updater.start_polling()
         
         # Start MCP server (blocks on stdin)

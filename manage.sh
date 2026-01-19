@@ -162,11 +162,15 @@ start() {
         return
     fi
     
-    # 检查 .env
     if [ ! -f .env ]; then
         error "未找到 .env 配置文件，请先创建或重新部署"
         return
     fi
+    
+    # Load environment variables
+    set -a
+    source .env
+    set +a
 
     info "正在启动 $APP_NAME..."
     nohup ./$APP_NAME > "$LOG_FILE" 2>&1 &
