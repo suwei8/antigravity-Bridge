@@ -24,7 +24,7 @@ error() {
 
 check_dependencies() {
     info "检查系统依赖..."
-    local cmds=("xdotool" "scrot" "xclip")
+    local cmds=("xdotool" "scrot" "xclip" "gnome-screenshot")
     local pkgs=("python3-tk" "python3-dev")
     local install_needed=0
 
