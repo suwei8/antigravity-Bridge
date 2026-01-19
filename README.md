@@ -7,6 +7,7 @@ Telegram Bot 桥接到 GUI 应用的自动化工具，支持 MCP (Model Context 
 - **Telegram Bot**：接收用户消息（文字、图片）
 - **GUI 自动化**：自动将消息粘贴到目标应用并提交
 - **多图消息支持**：支持最多 5 张图片 + 文字的组合消息
+- **智能图片处理**：自动检测并转换非 PNG 图片 (如 JPG) 为 PNG 格式，确保剪贴板兼容性
 - **状态监控**：自动检测 Replying 状态并发送 "思考中..." 反馈
 - **Accept 自动点击**：自动点击 Accept 按钮
 - **MCP Server**：提供 Telegram 消息发送工具
@@ -16,7 +17,7 @@ Telegram Bot 桥接到 GUI 应用的自动化工具，支持 MCP (Model Context 
 - Ubuntu 20.04 LTS (aarch64)
 - Python 3.8+
 - X11 桌面环境 (XFCE)
-- 必要的系统包：`xdotool`, `scrot`, `xclip`
+- 必要的系统包：`xdotool`, `scrot`, `xclip`, `python3-tk`, `python3-dev`
 
 ## 安装
 

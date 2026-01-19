@@ -24,20 +24,46 @@ error() {
 
 check_dependencies() {
     info "检查系统依赖..."
-    local deps=("xdotool" "scrot" "xclip")
+    local cmds=("xdotool" "scrot" "xclip")
+    local pkgs=("python3-tk" "python3-dev")
     local install_needed=0
 
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
-            echo "$dep 未安装"
+    # Check commands
+    for cmd in "${cmds[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            echo "命令 $cmd 未安装"
+            install_needed=1
+        fi
+    done
+
+    # Check packages (Debian/Ubuntu specific)
+    for pkg in "${pkgs[@]}"; do
+        if ! dpkg -s "$pkg" &> /dev/null; then
+            echo "包 $pkg 未安装"
             install_needed=1
         fi
     done
 
     if [ $install_needed -eq 1 ]; then
         info "正在安装缺失的依赖 (需要 sudo 权限)..."
+        # Combine lists for installation
+        local install_list=""
+        # Note: command names usually match package names for these, but not always.
+        # xdotool -> xdotool, scrot -> scrot, xclip -> xclip
+        for cmd in "${cmds[@]}"; do
+             if ! command -v "$cmd" &> /dev/null; then
+                install_list="$install_list $cmd"
+             fi
+        done
+        for pkg in "${pkgs[@]}"; do
+            if ! dpkg -s "$pkg" &> /dev/null; then
+                install_list="$install_list $pkg"
+            fi
+        done
+        
+        info "安装列表: $install_list"
         sudo apt-get update
-        sudo apt-get install -y xdotool scrot xclip
+        sudo apt-get install -y $install_list
     else
         info "所有依赖已安装。"
     fi

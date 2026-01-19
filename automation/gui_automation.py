@@ -345,63 +345,89 @@ def set_clipboard(text: str) -> bool:
         return False
 
 
+from PIL import Image
+
+# ... (rest of imports)
+
+# ... (previous code)
+
 def set_clipboard_image(image_path: str) -> bool:
     """
-    复制图片到剪贴板（使用 Gtk）。
+    Copy image to clipboard using xclip directly.
+    Ensures image is in PNG format before copying.
+    Dependencies: xclip, pillow
     
     Args:
-        image_path: 图片文件路径
+        image_path: Path to the image file
         
     Returns:
         True if successful, False otherwise
     """
+    temp_png_path = None
     try:
-        # 检查文件是否存在
         if not os.path.exists(image_path):
-            logger.error(f"set_clipboard_image: 文件不存在 {image_path}")
+            logger.error(f"set_clipboard_image: File not found {image_path}")
             return False
         
         abs_path = os.path.abspath(image_path)
+        target_path = abs_path
         
-        # 使用 Python 脚本通过 Gtk 复制图片
-        script = f'''
-import gi
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GdkPixbuf
+        # 1. Ensure/Convert to PNG
+        try:
+            with Image.open(abs_path) as img:
+                if img.format != 'PNG':
+                    logger.info(f"Converting {img.format} to PNG for clipboard...")
+                    # Create temporary PNG file
+                    import tempfile
+                    fd, temp_png_path = tempfile.mkstemp(suffix='.png')
+                    os.close(fd)
+                    
+                    img.save(temp_png_path, format="PNG")
+                    target_path = temp_png_path
+                    logger.info(f"Saved temporary PNG to {target_path}")
+        except Exception as e:
+            logger.error(f"Error processing image format: {e}")
+            # Fallback to original path if processing fails
+            target_path = abs_path
 
-# 加载图片
-pixbuf = GdkPixbuf.Pixbuf.new_from_file("{abs_path}")
-
-# 获取剪贴板
-clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-
-# 复制图片到剪贴板
-clipboard.set_image(pixbuf)
-clipboard.store()
-
-print("OK")
-'''
+        # 2. Set to Clipboard
+        # Command: xclip -selection clipboard -t image/png -i /path/to/file
+        cmd = ['xclip', '-selection', 'clipboard', '-t', 'image/png', '-i', target_path]
+        
+        env = {**os.environ, 'DISPLAY': os.getenv('DISPLAY', ':0')}
+        
+        # xclip stays running to serve the selection, but usually forks and exits parent.
+        # Use timeout to avoid blocking if it doesn't fork correctly?
+        # Added -quiet and -l 1 might help but standard usage usually works.
+        # We will keep existing timeout logic.
         
         result = subprocess.run(
-            ['/usr/bin/python3', '-c', script],
+            cmd,
             capture_output=True,
             text=True,
             timeout=5,
-            env={**os.environ, 'DISPLAY': os.getenv('DISPLAY', ':0')}
+            env=env
         )
         
-        if result.returncode == 0 and "OK" in result.stdout:
-            logger.info(f"set_clipboard_image: {abs_path} -> 成功")
+        if result.returncode == 0:
+            logger.info(f"set_clipboard_image: {target_path} -> Success (xclip)")
+            time.sleep(0.5)
             return True
         else:
-            logger.error(f"set_clipboard_image: 失败 - {result.stderr}")
+            logger.error(f"set_clipboard_image: Failed (xclip) - {result.stderr}")
             return False
-    except subprocess.TimeoutExpired:
-        logger.error(f"set_clipboard_image: 超时")
-        return False
+            
     except Exception as e:
-        logger.error(f"Error setting clipboard image: {e}")
+        logger.error(f"Error setting clipboard image (xclip): {e}")
         return False
+    finally:
+        # 3. Cleanup temporary file
+        if temp_png_path and os.path.exists(temp_png_path):
+            try:
+                os.remove(temp_png_path)
+                logger.debug(f"Removed temp file {temp_png_path}")
+            except OSError:
+                pass
 
 
 def find_image(
