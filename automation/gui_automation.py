@@ -401,21 +401,28 @@ def set_clipboard_image(image_path: str) -> bool:
         # Added -quiet and -l 1 might help but standard usage usually works.
         # We will keep existing timeout logic.
         
-        result = subprocess.run(
+        # xclip stays running to serve the selection. We must NOT wait for it to exit.
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env
         )
         
-        if result.returncode == 0:
-            logger.info(f"set_clipboard_image: {target_path} -> Success (xclip)")
-            time.sleep(0.5)
+        # Wait briefly to see if it crashes immediately
+        try:
+            stdout, stderr = process.communicate(timeout=0.5)
+            # If we are here, it exited. Check return code.
+            if process.returncode == 0:
+                logger.info(f"set_clipboard_image: {target_path} -> Success (xclip exited)")
+                return True
+            else:
+                logger.error(f"set_clipboard_image: Failed (xclip) - {stderr.decode()}")
+                return False
+        except subprocess.TimeoutExpired:
+            # It's still running, which is GOOD for xclip (holding selection)
+            logger.info(f"set_clipboard_image: {target_path} -> Success (xclip running)")
             return True
-        else:
-            logger.error(f"set_clipboard_image: Failed (xclip) - {result.stderr}")
-            return False
             
     except Exception as e:
         logger.error(f"Error setting clipboard image (xclip): {e}")

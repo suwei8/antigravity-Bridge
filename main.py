@@ -319,7 +319,13 @@ class AntigravityBridge:
         logger.info("Antigravity Bridge Bot & MCP Server Starting...")
         
         # Start bot in background (Service Binary w/ Polling)
-        self.updater.start_polling()
+        try:
+            self.updater.start_polling()
+        except Exception as e:
+            logger.critical(f"Failed to start polling: {e}")
+            if "Unauthorized" in str(e) or "InvalidToken" in str(e):
+                logger.critical("FATAL: The provided Telegram Token is invalid. Please check your .env file.")
+            sys.exit(1)
         
         # Start MCP server (blocks on stdin)
         mcp_thread = threading.Thread(target=mcp_server.start, daemon=True)
