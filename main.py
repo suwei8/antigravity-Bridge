@@ -74,9 +74,13 @@ class AntigravityBridge:
             logger.error("TELEGRAM_BOT_TOKEN not set")
             return False
         
-        # Determine templates directory (relative to this script)
-        script_dir = Path(__file__).parent.absolute()
-        self.templates_dir = str(script_dir / "templates")
+        # Determine templates directory
+        # PyInstaller: sys._MEIPASS | Dev: script_dir
+        if hasattr(sys, '_MEIPASS'):
+            self.templates_dir = os.path.join(sys._MEIPASS, "templates")
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            self.templates_dir = os.path.join(script_dir, "templates")
         
         logger.info(f"Started. Script: {__file__}, TemplatesDir: {self.templates_dir}, "
                    f"DISPLAY: {os.getenv('DISPLAY', 'not set')}")
@@ -138,6 +142,12 @@ class AntigravityBridge:
     
     def handle_message(self, update: Update, context: CallbackContext):
         """Buffer incoming messages and process in batches."""
+        # 强制打印调试信息
+        try:
+            logger.info(f"handle_message received update: {update}")
+        except Exception as e:
+            logger.error(f"Error logging update: {e}")
+
         if not update.message:
             return
             
@@ -234,13 +244,17 @@ class AntigravityBridge:
                     logger.error(f"Error downloading item: {e}")
         
         full_text = "\n".join(text_parts)
-        content_with_context = f"From Telegram [{chat_id}]: {full_text}"
         
         # 统计日志
         logger.info(f"收集完成: {len(image_paths)} 张图片, {len(file_paths)} 个文件, 文字长度={len(full_text)}")
         
-        if image_paths or file_paths:
-            content_with_context += " (Group/Attachments)"
+        if full_text:
+            content_with_context = f"From Telegram [{chat_id}]: {full_text}"
+            if image_paths or file_paths:
+                content_with_context += " (Group/Attachments)"
+        else:
+            # 如果没有文字，则不发送任何文本上下文，只处理媒体文件
+            content_with_context = ""
         
         # Process in background thread
         def process():
