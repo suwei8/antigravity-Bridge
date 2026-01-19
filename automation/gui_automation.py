@@ -279,46 +279,46 @@ def find_replying(templates_dir: str, confidence: float = 0.9) -> tuple:
 
 def click_accept_button(templates_dir: str, confidence: float = 0.7) -> tuple:
     """
-    查找并点击 Accept 按钮 - 公共工具函数
-    
-    使用 xdotool 实现可靠的点击操作。
+    查找并点击 Accept 或 Accept all 按钮 - 公共工具函数
     
     Args:
         templates_dir: 模板目录路径
-        confidence: 图像匹配置信度（默认0.7，accept_button需要较低值）
+        confidence: 图像匹配置信度
     
     Returns:
         tuple: (success: bool, debug_info: str)
-    
-    Example:
-        success, info = click_accept_button('/path/to/templates')
-        if success:
-            print("Accept 按钮点击成功!")
     """
     import subprocess
     
-    image_path = os.path.join(templates_dir, "accept_button.png")
+    # 尝试查找的模板列表
+    templates = ["accept_button.png", "accept_all.png"]
     
-    try:
-        location = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
-        if location:
-            x, y = int(location.x), int(location.y)
+    for template_name in templates:
+        image_path = os.path.join(templates_dir, template_name)
+        
+        # 跳过不存在的模板
+        if not os.path.exists(image_path):
+            continue
             
-            logger.info(f"click_accept_button: 找到 @ ({x}, {y})")
-            
-            # 使用 xdotool 点击（更可靠）
-            subprocess.run(['xdotool', 'mousemove', str(x), str(y)], check=True)
-            time.sleep(0.2)
-            subprocess.run(['xdotool', 'click', '1'], check=True)
-            
-            return True, f"点击成功 @ ({x}, {y})"
-        else:
-            return False, "未找到 accept_button.png"
-    except pyautogui.ImageNotFoundException:
-        return False, "未找到 accept_button.png"
-    except Exception as e:
-        logger.error(f"click_accept_button 错误: {e}")
-        return False, f"错误: {e}"
+        try:
+            location = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
+            if location:
+                x, y = int(location.x), int(location.y)
+                
+                logger.info(f"click_accept_button: 找到 {template_name} @ ({x}, {y})")
+                
+                # 使用 xdotool 点击
+                subprocess.run(['xdotool', 'mousemove', str(x), str(y)], check=True)
+                time.sleep(0.2)
+                subprocess.run(['xdotool', 'click', '1'], check=True)
+                
+                return True, f"点击成功 ({template_name}) @ ({x}, {y})"
+        except pyautogui.ImageNotFoundException:
+            continue
+        except Exception as e:
+            logger.error(f"click_accept_button 错误 ({template_name}): {e}")
+    
+    return False, "未找到 accept 按钮"
 
 
 def set_clipboard(text: str) -> bool:
