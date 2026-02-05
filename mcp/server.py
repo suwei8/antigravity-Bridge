@@ -27,16 +27,21 @@ class MCPServer:
     Handles JSON-RPC 2.0 over stdio for AI assistant tool integration.
     """
     
-    def __init__(self, telegram_func: Optional[Callable[[str, str], Optional[Exception]]] = None):
+    def __init__(self, telegram_func: Optional[Callable[[str, str], Optional[Exception]]] = None,
+                 stdout_stream=None):
         """
         Initialize the MCP server.
         
         Args:
             telegram_func: Callback function to send Telegram messages.
                           Signature: (chat_id: str, text: str) -> Optional[Exception]
+            stdout_stream: The stdout stream to use for MCP output.
+                          If None, uses sys.stdout.
         """
         self.telegram_func = telegram_func
         self._output_lock = threading.Lock()
+        # Use provided stdout or fall back to sys.stdout
+        self._stdout = stdout_stream if stdout_stream is not None else sys.stdout
     
     def start(self):
         """
@@ -69,7 +74,18 @@ class MCPServer:
         """Handle a single JSON-RPC request."""
         method = request.get('method', '')
         request_id = request.get('id')
-        params = request.get('params', {})
+        # 确保 params 始终是字典（修复 params: null 的情况）
+        params = request.get('params') or {}
+        
+        # 详细日志记录收到的请求
+        logger.debug(f"MCP Request: method={method}, id={request_id}, params={params}")
+        
+        # JSON-RPC 2.0: 通知（Notification）没有 id 字段，不应返回任何响应
+        # MCP 协议: 所有 notifications/ 开头的方法都是通知
+        if request_id is None or method.startswith('notifications/'):
+            # 这是一个通知，直接忽略，不返回任何响应
+            logger.debug(f"MCP: Ignoring notification: {method}")
+            return
         
         response: Dict[str, Any] = {
             'jsonrpc': '2.0',
@@ -78,16 +94,23 @@ class MCPServer:
         
         try:
             if method == 'initialize':
+                # 严格按照 MCP 协议规范返回
                 response['result'] = {
                     'protocolVersion': '2024-11-05',
-                    'serverInfo': {
-                        'name': 'gravity-bridge',
-                        'version': '2.0.0',  # Python version
-                    },
                     'capabilities': {
-                        'tools': {},
+                        'tools': {
+                            'listChanged': False  # 明确声明不支持动态工具列表变更通知
+                        },
+                    },
+                    'serverInfo': {
+                        'name': 'antigravity-bridge',
+                        'version': '2.0.0',
                     },
                 }
+            
+            elif method == 'ping':
+                # 支持 ping 请求（协议要求）
+                response['result'] = {}
                 
             elif method == 'tools/list':
                 response['result'] = {
@@ -150,10 +173,6 @@ class MCPServer:
                         'message': 'Tool not found',
                     }
                     
-            elif method == 'notifications/initialized':
-                # Notification, no response needed
-                return
-                
             else:
                 response['error'] = {
                     'code': -32601,
@@ -173,4 +192,5 @@ class MCPServer:
     def _write_output(self, message: str):
         """Thread-safe write to stdout."""
         with self._output_lock:
-            print(message, flush=True)
+            self._stdout.write(message + '\n')
+            self._stdout.flush()

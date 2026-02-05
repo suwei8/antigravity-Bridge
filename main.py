@@ -8,15 +8,21 @@ with MCP (Model Context Protocol) server support for AI agent integration.
 Compatible with Ubuntu 20.04 LTS (aarch64) and XFCE desktop environment.
 """
 
+# CRITICAL: Save original stdout for MCP BEFORE any imports
+# Some third-party libraries print to stdout during import, which corrupts MCP communication
+import sys
+_original_stdout = sys.stdout  # Save for MCP use
+sys.stdout = sys.stderr  # Redirect stdout to stderr to prevent pollution
+
 import logging
 import os
-import sys
 import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
 
 from dotenv import load_dotenv
 from telegram import Bot, Message, Update
@@ -299,6 +305,8 @@ class AntigravityBridge:
         Used by MCP server to send replies.
         """
         try:
+            if not self.bot:
+                return Exception("Telegram Bot not initialized yet")
             chat_id = int(chat_id_str)
             # Handle escaped newlines
             safe_text = text.replace("\\n", "\n")
@@ -310,11 +318,25 @@ class AntigravityBridge:
     
     def run(self):
         """Start the bot and MCP server."""
-        if not self.setup():
-            sys.exit(1)
+        # 优先启动 MCP Server（在单独线程中监听 stdin）
+        # 这样 IDE 可以立即获取工具列表，无需等待 Telegram 初始化
+        # 使用保存的原始 stdout，避免被重定向影响
+        mcp_server = MCPServer(self.send_telegram, stdout_stream=_original_stdout)
+        mcp_thread = threading.Thread(target=mcp_server.start, daemon=True)
+        mcp_thread.start()
+        logger.info("MCP Server started first, listening on stdin")
         
-        # Setup MCP Server
-        mcp_server = MCPServer(self.send_telegram)
+        # 然后初始化 Telegram Bot
+        if not self.setup():
+            # 即使 Telegram 初始化失败，MCP Server 仍然可以响应基本请求
+            logger.error("Telegram setup failed, but MCP Server is running")
+            # 保持进程存活，MCP 仍可工作（只是发送消息功能不可用）
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                logger.info("Shutting down...")
+            return
         
         logger.info("Antigravity Bridge Bot & MCP Server Starting...")
         
@@ -325,11 +347,7 @@ class AntigravityBridge:
             logger.critical(f"Failed to start polling: {e}")
             if "Unauthorized" in str(e) or "InvalidToken" in str(e):
                 logger.critical("FATAL: The provided Telegram Token is invalid. Please check your .env file.")
-            sys.exit(1)
-        
-        # Start MCP server (blocks on stdin)
-        mcp_thread = threading.Thread(target=mcp_server.start, daemon=True)
-        mcp_thread.start()
+            # MCP Server 仍在运行，不退出进程
         
         # Keep main thread alive
         try:
@@ -337,7 +355,8 @@ class AntigravityBridge:
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
-            self.updater.stop()
+            if hasattr(self, 'updater'):
+                self.updater.stop()
 
 
 def main():

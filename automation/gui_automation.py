@@ -332,17 +332,23 @@ def set_clipboard(text: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        # Use xclip for X11 compatibility
-        process = subprocess.Popen(
-            ['xclip', '-selection', 'clipboard'],
-            stdin=subprocess.PIPE,
-            text=True
-        )
-        process.communicate(input=text)
-        return process.returncode == 0
+        # 优先使用 pyperclip，它处理得更好
+        pyperclip.copy(text)
+        return True
     except Exception as e:
-        logger.error(f"Error setting clipboard: {e}")
-        return False
+        logger.warning(f"pyperclip failed, falling back to xclip: {e}")
+        try:
+            # Fallback to xclip
+            process = subprocess.Popen(
+                ['xclip', '-selection', 'clipboard'],
+                stdin=subprocess.PIPE,
+                text=True
+            )
+            process.communicate(input=text, timeout=2)
+            return process.returncode == 0
+        except Exception as e2:
+            logger.error(f"Error setting clipboard: {e2}")
+            return False
 
 
 from PIL import Image
@@ -351,7 +357,7 @@ from PIL import Image
 
 # ... (previous code)
 
-def set_clipboard_image(image_path: str) -> bool:
+def set_clipboard_image(image_path: str) -> Tuple[bool, Optional[subprocess.Popen]]:
     """
     Copy image to clipboard using xclip directly.
     Ensures image is in PNG format before copying.
@@ -361,13 +367,15 @@ def set_clipboard_image(image_path: str) -> bool:
         image_path: Path to the image file
         
     Returns:
-        True if successful, False otherwise
+        Tuple[bool, Optional[subprocess.Popen]]: (Success, Process object if running)
+        NOTE: If successful, the xclip process is returned and MUST be terminated
+              by the caller after pasting is complete to release the clipboard.
     """
     temp_png_path = None
     try:
         if not os.path.exists(image_path):
             logger.error(f"set_clipboard_image: File not found {image_path}")
-            return False
+            return False, None
         
         abs_path = os.path.abspath(image_path)
         target_path = abs_path
@@ -396,11 +404,6 @@ def set_clipboard_image(image_path: str) -> bool:
         
         env = {**os.environ, 'DISPLAY': os.getenv('DISPLAY', ':0')}
         
-        # xclip stays running to serve the selection, but usually forks and exits parent.
-        # Use timeout to avoid blocking if it doesn't fork correctly?
-        # Added -quiet and -l 1 might help but standard usage usually works.
-        # We will keep existing timeout logic.
-        
         # xclip stays running to serve the selection. We must NOT wait for it to exit.
         process = subprocess.Popen(
             cmd,
@@ -411,26 +414,37 @@ def set_clipboard_image(image_path: str) -> bool:
         
         # Wait briefly to see if it crashes immediately
         try:
-            stdout, stderr = process.communicate(timeout=0.5)
+            # Wait a tiny bit to check for immediate failure
+            # But xclip SHOULD block, so TimeoutExpired is expected (and good)
+            process.wait(timeout=0.1)
+            
             # If we are here, it exited. Check return code.
-            if process.returncode == 0:
-                logger.info(f"set_clipboard_image: {target_path} -> Success (xclip exited)")
-                return True
-            else:
-                logger.error(f"set_clipboard_image: Failed (xclip) - {stderr.decode()}")
-                return False
+            if process.returncode != 0:
+                stderr = process.stderr.read() if process.stderr else b""
+                logger.error(f"set_clipboard_image: Failed (xclip exited) - {stderr.decode()}")
+                return False, None
+                
+            # If it exited with 0 immediately, that's weird for xclip without -l 1,
+            # but maybe it forked? xclip usually doesn't fork by default unless backgrounded.
+            return True, None # It's gone, no process to manage
+            
         except subprocess.TimeoutExpired:
             # It's still running, which is GOOD for xclip (holding selection)
             logger.info(f"set_clipboard_image: {target_path} -> Success (xclip running)")
-            return True
+            return True, process
             
     except Exception as e:
         logger.error(f"Error setting clipboard image (xclip): {e}")
-        return False
+        return False, None
     finally:
         # 3. Cleanup temporary file
+        # 注意：如果 xclip 还在运行且使用了 temp file，这一步可能会导致问题？
+        # xclip 需要读取文件内容。通常它会读取进内存吗？
+        # xclip 读取文件应该很快。
         if temp_png_path and os.path.exists(temp_png_path):
             try:
+                # 稍微延迟删除，确保 xclip以此读取
+                time.sleep(0.2) 
                 os.remove(temp_png_path)
                 logger.debug(f"Removed temp file {temp_png_path}")
             except OSError:
@@ -724,32 +738,44 @@ def full_workflow_image(
     4. Monitor process
     """
     # 1. Copy Image to Clipboard
-    if not set_clipboard_image(image_path):
+    success, clip_process = set_clipboard_image(image_path)
+    if not success:
         logger.error(f"Error setting clipboard image: {image_path}")
         send_status(f"Error setting clipboard image: {image_path}")
         return
     
-    # 2. Find Input Box
-    input_box_img = os.path.join(templates_dir, "input_box.png")
-    success, debug_log = find_and_click(input_box_img, confidence)
-    
-    if success:
-        # 3. Paste and Submit
-        paste_and_submit()
+    try:
+        # 2. Find Input Box
+        input_box_img = os.path.join(templates_dir, "input_box.png")
+        success, debug_log = find_and_click(input_box_img, confidence)
         
-        # 4. Monitor Process
-        replying_img = os.path.join(templates_dir, "Replying.png")
-        accept_img = os.path.join(templates_dir, "accept_button.png")
-        
-        monitor_process(
-            replying_img,
-            accept_img,
-            on_thinking=lambda: send_status("Thinking..."),
-            confidence=confidence
-        )
-    else:
-        logger.error("Could not find input_box.png")
-        send_status(f"Error [v3]: input_box.png (img flow) not found. Info: {debug_log}")
+        if success:
+            # 3. Paste and Submit
+            paste_and_submit()
+            
+            # 4. Monitor Process
+            replying_img = os.path.join(templates_dir, "Replying.png")
+            accept_img = os.path.join(templates_dir, "accept_button.png")
+            
+            monitor_process(
+                replying_img,
+                accept_img,
+                on_thinking=lambda: send_status("Thinking..."),
+                confidence=confidence
+            )
+        else:
+            logger.error("Could not find input_box.png")
+            send_status(f"Error [v3]: input_box.png (img flow) not found. Info: {debug_log}")
+            
+    finally:
+        # Cleanup clipboard process ALWAYS
+        if clip_process:
+            logger.debug("Cleaning up xclip process...")
+            try:
+                clip_process.terminate()
+                clip_process.wait(timeout=1)
+            except Exception as e:
+                logger.warning(f"Error cleaning up xclip: {e}")
 
 
 def full_workflow_media_group(
@@ -796,23 +822,34 @@ def full_workflow_media_group(
         logger.info(f"处理图片 {i+1}/{len(image_paths)}: {img_path}")
         
         # 复制图片到剪贴板
-        if not set_clipboard_image(img_path):
+        success, clip_process = set_clipboard_image(img_path)
+        if not success:
             logger.error(f"无法复制图片到剪贴板: {img_path}")
             send_status(f"错误: 无法复制图片 {i+1}")
             continue
-        
-        # 点击输入框
-        success, debug_info = click_input_box(templates_dir)
-        if not success:
-            logger.error(f"无法点击输入框: {debug_info}")
-            send_status(f"错误: 无法点击输入框. {debug_info}")
-            return
-        
-        # Ctrl+V 粘贴
-        time.sleep(0.3)
-        logger.info("粘贴图片...")
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.5)
+            
+        try:
+            # 点击输入框
+            success, debug_info = click_input_box(templates_dir)
+            if not success:
+                logger.error(f"无法点击输入框: {debug_info}")
+                send_status(f"错误: 无法点击输入框. {debug_info}")
+                return
+            
+            # Ctrl+V 粘贴
+            time.sleep(0.3)
+            logger.info("粘贴图片...")
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.5)
+            
+        finally:
+            # Cleanup clipboard process ALWAYS
+            if clip_process:
+                try:
+                    clip_process.terminate()
+                    clip_process.wait(timeout=1)
+                except:
+                    pass
     
     # 2. 处理每个非图片文件（使用 @路径 格式）
     for i, file_path in enumerate(file_paths):
