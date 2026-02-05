@@ -37,6 +37,7 @@ from telegram.ext import (
 from automation.gui_automation import (
     full_workflow,
     full_workflow_media_group,
+    find_and_click,
 )
 from mcp.server import MCPServer
 
@@ -69,6 +70,7 @@ class AntigravityBridge:
         self.buffer_lock = threading.Lock()
         self.bot: Optional[Bot] = None
         self.templates_dir: str = ""
+        self._retry_monitor_running = False
         
     def setup(self) -> bool:
         """Initialize the application."""
@@ -316,6 +318,36 @@ class AntigravityBridge:
             logger.error(f"Error sending to Telegram: {e}")
             return e
     
+    def _retry_monitor(self):
+        """
+        后台监控 Retry 按钮并自动点击。
+        
+        当 IDE 因网络问题断开时会出现 Retry 对话框，
+        此线程持续监控并自动点击 Retry 按钮恢复连接。
+        """
+        retry_img = os.path.join(self.templates_dir, "Retry.png")
+        logger.info(f"Retry monitor started. Watching for: {retry_img}")
+        
+        while self._retry_monitor_running:
+            try:
+                success, debug_info = find_and_click(
+                    retry_img,
+                    confidence=0.8,
+                    offset=(0, 0)
+                )
+                if success:
+                    logger.info(f"Retry button clicked: {debug_info}")
+                    # 点击后等待稍长时间，避免重复点击
+                    time.sleep(3)
+                else:
+                    # 未找到按钮，休眠后继续监控（节省系统资源）
+                    time.sleep(5)
+            except Exception as e:
+                logger.error(f"Retry monitor error: {e}")
+                time.sleep(2)
+        
+        logger.info("Retry monitor stopped")
+    
     def run(self):
         """Start the bot and MCP server."""
         # 优先启动 MCP Server（在单独线程中监听 stdin）
@@ -339,6 +371,12 @@ class AntigravityBridge:
             return
         
         logger.info("Antigravity Bridge Bot & MCP Server Starting...")
+        
+        # 启动 Retry 按钮监控线程
+        self._retry_monitor_running = True
+        retry_thread = threading.Thread(target=self._retry_monitor, daemon=True)
+        retry_thread.start()
+        logger.info("Retry button monitor started")
         
         # Start bot in background (Service Binary w/ Polling)
         try:
