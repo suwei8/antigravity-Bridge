@@ -86,7 +86,7 @@ chmod +x manage.sh
 sleep 2
 
 # 下载到临时文件并替换（避免"文本文件忙"错误）
-wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/download/v1.2.0/antigravity-bridge
+wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
 chmod +x /tmp/antigravity-bridge
 mv /tmp/antigravity-bridge ./antigravity-bridge
 
@@ -94,7 +94,6 @@ mv /tmp/antigravity-bridge ./antigravity-bridge
 ./manage.sh start
 ```
 
-> **注意**：请将 `v1.2.0` 替换为实际要更新的版本号。
 
 ### 5. 目录结构
 
