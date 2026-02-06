@@ -65,6 +65,9 @@ class MessageBuffer:
 class AntigravityBridge:
     """Main application class for Antigravity-Bridge."""
     
+    # 硬编码允许的 Chat ID 列表（自用项目，无需配置）
+    ALLOWED_CHAT_IDS = [1118793113, 8415850251]
+    
     def __init__(self):
         self.buffer_map: Dict[int, MessageBuffer] = defaultdict(MessageBuffer)
         self.buffer_lock = threading.Lock()
@@ -162,6 +165,11 @@ class AntigravityBridge:
         message = update.message
         chat_id = message.chat_id
         
+        # 检查 chat_id 是否在白名单中
+        if chat_id not in self.ALLOWED_CHAT_IDS:
+            logger.warning(f"Ignored message from unauthorized chat_id: {chat_id}")
+            return
+        
         with self.buffer_lock:
             buf = self.buffer_map[chat_id]
             buf.messages.append(message)
@@ -257,9 +265,9 @@ class AntigravityBridge:
         logger.info(f"收集完成: {len(image_paths)} 张图片, {len(file_paths)} 个文件, 文字长度={len(full_text)}")
         
         if full_text:
-            content_with_context = f"From Telegram [{chat_id}]: {full_text}"
+            content_with_context = f"From Telegram: {full_text}\n⬆️ Please always use MCP Tools: antigravity-bridge to reply to this message."
             if image_paths or file_paths:
-                content_with_context += " (Group/Attachments)"
+                content_with_context = f"From Telegram: {full_text} (Group/Attachments)\n⬆️ Please always use MCP Tools: antigravity-bridge to reply to this message."
         else:
             # 如果没有文字，则不发送任何文本上下文，只处理媒体文件
             content_with_context = ""
