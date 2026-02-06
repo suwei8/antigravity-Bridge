@@ -74,6 +74,7 @@ class AntigravityBridge:
         self.bot: Optional[Bot] = None
         self.templates_dir: str = ""
         self._retry_monitor_running = False
+        self.mcp_server: Optional[MCPServer] = None  # MCP Server 引用，用于设置 last_chat_id
         
     def setup(self) -> bool:
         """Initialize the application."""
@@ -169,6 +170,10 @@ class AntigravityBridge:
         if chat_id not in self.ALLOWED_CHAT_IDS:
             logger.warning(f"Ignored message from unauthorized chat_id: {chat_id}")
             return
+        
+        # 更新 MCP Server 的 last_chat_id，用于自动回复
+        if self.mcp_server:
+            self.mcp_server.set_last_chat_id(str(chat_id))
         
         with self.buffer_lock:
             buf = self.buffer_map[chat_id]
@@ -361,8 +366,8 @@ class AntigravityBridge:
         # 优先启动 MCP Server（在单独线程中监听 stdin）
         # 这样 IDE 可以立即获取工具列表，无需等待 Telegram 初始化
         # 使用保存的原始 stdout，避免被重定向影响
-        mcp_server = MCPServer(self.send_telegram, stdout_stream=_original_stdout)
-        mcp_thread = threading.Thread(target=mcp_server.start, daemon=True)
+        self.mcp_server = MCPServer(self.send_telegram, stdout_stream=_original_stdout)
+        mcp_thread = threading.Thread(target=self.mcp_server.start, daemon=True)
         mcp_thread.start()
         logger.info("MCP Server started first, listening on stdin")
         

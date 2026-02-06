@@ -76,7 +76,27 @@ chmod +x manage.sh
 - **重启**: `./manage.sh restart`
 - **查看日志**: `./manage.sh logs`
 
-### 4. 目录结构
+### 4. 手动更新已部署环境
+
+如果需要手动更新到指定版本：
+
+```bash
+# 停止服务并等待进程退出
+./manage.sh stop
+sleep 2
+
+# 下载到临时文件并替换（避免"文本文件忙"错误）
+wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/download/v1.2.0/antigravity-bridge
+chmod +x /tmp/antigravity-bridge
+mv /tmp/antigravity-bridge ./antigravity-bridge
+
+# 启动服务
+./manage.sh start
+```
+
+> **注意**：请将 `v1.2.0` 替换为实际要更新的版本号。
+
+### 5. 目录结构
 
 部署后将在当前目录下生成：
 - `antigravity-bridge`: 可执行文件

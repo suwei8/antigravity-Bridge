@@ -7,6 +7,7 @@ Supports: initialize, tools/list, tools/call methods.
 
 import json
 import logging
+import os
 import sys
 import threading
 from typing import Any, Callable, Dict, Optional
@@ -27,6 +28,9 @@ class MCPServer:
     Handles JSON-RPC 2.0 over stdio for AI assistant tool integration.
     """
     
+    # 使用文件共享 last_chat_id（解决进程间通信问题）
+    LAST_CHAT_ID_FILE = "/tmp/antigravity_last_chat_id"
+    
     def __init__(self, telegram_func: Optional[Callable[[str, str], Optional[Exception]]] = None,
                  stdout_stream=None):
         """
@@ -42,6 +46,25 @@ class MCPServer:
         self._output_lock = threading.Lock()
         # Use provided stdout or fall back to sys.stdout
         self._stdout = stdout_stream if stdout_stream is not None else sys.stdout
+    
+    def set_last_chat_id(self, chat_id: str):
+        """设置最后收到消息的 chat_id，写入文件供其他进程读取。"""
+        try:
+            with open(self.LAST_CHAT_ID_FILE, 'w') as f:
+                f.write(chat_id)
+            logger.debug(f"MCP: last_chat_id set to {chat_id}")
+        except Exception as e:
+            logger.error(f"MCP: Error writing last_chat_id: {e}")
+    
+    def get_last_chat_id(self) -> Optional[str]:
+        """从文件读取最后的 chat_id。"""
+        try:
+            if os.path.exists(self.LAST_CHAT_ID_FILE):
+                with open(self.LAST_CHAT_ID_FILE, 'r') as f:
+                    return f.read().strip()
+        except Exception as e:
+            logger.error(f"MCP: Error reading last_chat_id: {e}")
+        return None
     
     def start(self):
         """
@@ -123,14 +146,14 @@ class MCPServer:
                                 'properties': {
                                     'chat_id': {
                                         'type': 'string',
-                                        'description': 'The Telegram Chat ID to reply to',
+                                        'description': 'The Telegram Chat ID to reply to (optional, uses last message sender if not provided)',
                                     },
                                     'text': {
                                         'type': 'string',
                                         'description': 'The content of the message',
                                     },
                                 },
-                                'required': ['chat_id', 'text'],
+                                'required': ['text'],
                             },
                         },
                     ],
@@ -141,12 +164,21 @@ class MCPServer:
                 arguments = params.get('arguments', {})
                 
                 if tool_name == 'reply_to_telegram':
-                    chat_id = arguments.get('chat_id', '')
+                    chat_id = arguments.get('chat_id', '') or self.get_last_chat_id() or ''
                     text = arguments.get('text', '')
                     
-                    logger.info(f"MCP: Calling reply_to_telegram({chat_id}, {text})")
-                    
-                    if self.telegram_func:
+                    if not chat_id:
+                        response['error'] = {
+                            'code': -32602,
+                            'message': 'chat_id is required (no last_chat_id available)',
+                        }
+                    elif not text:
+                        response['error'] = {
+                            'code': -32602,
+                            'message': 'text is required',
+                        }
+                    elif self.telegram_func:
+                        logger.info(f"MCP: Calling reply_to_telegram({chat_id}, {text[:50]}...)")
                         error = self.telegram_func(chat_id, text)
                         if error:
                             response['error'] = {
