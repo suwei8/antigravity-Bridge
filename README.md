@@ -57,7 +57,7 @@ python main.py
 ### 1. 下载管理脚本
 
 ```bash
-wget https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
+wget -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
 chmod +x manage.sh
 ```
 
