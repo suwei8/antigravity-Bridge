@@ -94,7 +94,7 @@ deploy() {
             # read -r chat_id
             
             # 硬编码默认 Chat ID (主账号)
-            chat_id="1118793113"
+            chat_id="1118793113,8415850251"
             
             cat > .env << EOF
 TELEGRAM_BOT_TOKEN=$token
