@@ -39,7 +39,8 @@ pip install -r requirements.txt
 
 ```env
 TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
+# Chat ID 已硬编码配置，无需手动设置
+# TELEGRAM_CHAT_ID=1118793113,8415850251
 ```
 
 ## 使用方法
@@ -89,11 +90,9 @@ sleep 2
 wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
 chmod +x /tmp/antigravity-bridge
 mv /tmp/antigravity-bridge ./antigravity-bridge
-
 # 启动服务
 ./manage.sh start
 ```
-
 
 ### 5. 目录结构
 
