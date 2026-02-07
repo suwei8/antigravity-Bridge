@@ -90,8 +90,11 @@ deploy() {
             echo "未检测到 .env 配置文件"
             echo "请输入您的 Telegram Bot Token:"
             read -r token
-            echo "请输入您的 Chat ID:"
-            read -r chat_id
+            # echo "请输入您的 Chat ID:"
+            # read -r chat_id
+            
+            # 硬编码默认 Chat ID (主账号)
+            chat_id="1118793113"
             
             cat > .env << EOF
 TELEGRAM_BOT_TOKEN=$token
