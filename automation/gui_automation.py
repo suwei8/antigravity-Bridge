@@ -522,9 +522,16 @@ def find_and_click(
         
         logger.info(f"Found {image_path}, clicking at ({click_x}, {click_y})")
         
-        pyautogui.moveTo(click_x, click_y)
-        time.sleep(0.1)
-        pyautogui.click()
+        try:
+            import subprocess
+            subprocess.run(['xdotool', 'mousemove', str(int(click_x)), str(int(click_y))], check=True)
+            time.sleep(0.1)
+            subprocess.run(['xdotool', 'click', '1'], check=True)
+        except Exception as e:
+            logger.warning(f"xdotool click failed: {e}. Falling back to pyautogui.")
+            pyautogui.moveTo(click_x, click_y)
+            time.sleep(0.1)
+            pyautogui.click()
         
         return True, "Success"
     else:
