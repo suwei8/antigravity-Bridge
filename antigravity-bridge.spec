@@ -4,7 +4,7 @@
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('/usr/lib/aarch64-linux-gnu/libssl.so.1.1', '.'), ('/usr/lib/aarch64-linux-gnu/libcrypto.so.1.1', '.')],
     datas=[('templates', 'templates')],
     hiddenimports=['dotenv', 'python-dotenv', 'PIL', 'PIL.Image', 'cv2', 'numpy', 'pyautogui', 'pyperclip'],
     hookspath=[],
