@@ -150,6 +150,29 @@ EOF
     fi
 }
 
+update() {
+    info "开始更新到最新版本..."
+    check_dependencies
+
+    info "正在下载最新版本..."
+    local tmp_file="${APP_NAME}.tmp"
+    if curl -L -o "$tmp_file" "$DOWNLOAD_URL"; then
+        chmod +x "$tmp_file"
+        
+        info "正在停止当前服务..."
+        stop
+        
+        info "替换可执行文件..."
+        mv -f "$tmp_file" "$APP_NAME"
+        
+        info "更新成功，正在启动服务..."
+        start
+    else
+        error "下载失败，请检查网络。"
+        rm -f "$tmp_file"
+    fi
+}
+
 start() {
     if [ -f "$PID_FILE" ]; then
         if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
@@ -237,6 +260,9 @@ case "$1" in
     deploy)
         deploy
         ;;
+    update)
+        update
+        ;;
     start)
         start
         ;;
@@ -258,9 +284,10 @@ case "$1" in
         echo "3. 停止 (Stop)"
         echo "4. 重启 (Restart)"
         echo "5. 查看日志 (Logs)"
+        echo "6. 更新 (Update)"
         echo "0. 退出 (Exit)"
         echo "=========================================="
-        read -p "请输入选项 [0-5]: " choice
+        read -p "请输入选项 [0-6]: " choice
         
         case "$choice" in
             1) deploy ;;
@@ -268,6 +295,7 @@ case "$1" in
             3) stop ;;
             4) restart ;;
             5) logs ;;
+            6) update ;;
             0) exit 0 ;;
             *) echo "无效选项" ;;
         esac
