@@ -154,6 +154,16 @@ update() {
     info "开始更新到最新版本..."
     check_dependencies
 
+    # 获取最新版本 Tag
+    info "正在获取最新版本信息..."
+    local latest_tag=$(curl -sI "https://github.com/${REPO}/releases/latest" | grep -i location | awk -F/ '{print $NF}' | tr -d '\r')
+    
+    if [ -z "$latest_tag" ]; then
+        error "无法获取最新版本号，将直接尝试下载 latest。"
+    else
+        info "发现最新版本: ${GREEN}${latest_tag}${NC}"
+    fi
+
     info "正在下载最新版本..."
     local tmp_file="${APP_NAME}.tmp"
     if curl -L -o "$tmp_file" "$DOWNLOAD_URL"; then
@@ -165,7 +175,7 @@ update() {
         info "替换可执行文件..."
         mv -f "$tmp_file" "$APP_NAME"
         
-        info "更新成功，正在启动服务..."
+        info "更新成功 (${latest_tag:-latest})，正在启动服务..."
         start
     else
         error "下载失败，请检查网络。"
