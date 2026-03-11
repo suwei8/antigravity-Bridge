@@ -552,6 +552,7 @@ def paste_and_submit():
 def monitor_process(
     replying_img: str,
     accept_img: str,
+    templates_dir: str,
     on_thinking: Optional[Callable[[], None]] = None,
     confidence: float = 0.8,
     accept_confidence: float = 0.6
@@ -606,8 +607,22 @@ def monitor_process(
             logger.info(f"MonitorProcess: 'Replying' not found ({not_found_count}/{max_not_found})")
             
             if not_found_count >= max_not_found:
-                logger.info("MonitorProcess: 'Replying' gone. Stopping loop.")
-                return
+                logger.info("MonitorProcess: 'Replying' gone. Checking for Upgrade dialog...")
+                # 检查是否因为配额耗尽弹出了 Upgrade 对话框
+                upgrade_img = os.path.join(templates_dir, "Upgrade.png")
+                if find_image(upgrade_img, confidence=0.8):
+                    logger.warning("MonitorProcess: 'Upgrade' dialog detected! Quota exhausted.")
+                    if handle_model_switch(templates_dir, confidence=0.8):
+                        logger.info("MonitorProcess: Model switched and continued successfully. Restarting monitor loop.")
+                        # 如果切换成功，重置计数器和时间，继续监控新生出的 Replying
+                        start_time = time.time()
+                        continue
+                    else:
+                        logger.error("MonitorProcess: Model switch failed. Stopping loop.")
+                        return False
+                else:
+                    logger.info("MonitorProcess: Normal finish. 'Replying' gone without 'Upgrade'. Stopping loop.")
+                    return True
             continue
         
         # Reset counter as we found it
@@ -626,6 +641,81 @@ def monitor_process(
             find_and_click(accept_img, accept_confidence)
     
     logger.info("MonitorProcess: Safety timeout reached.")
+    return True
+
+
+def handle_model_switch(templates_dir: str, confidence: float = 0.8) -> bool:
+    """
+    处理配额用尽后的模型切换逻辑
+    1. 关闭 Upgrade 弹窗
+    2. 打开模型列表
+    3. 选择另一个模型
+    4. 输入 continue 并回车
+    
+    Returns: bool (True for success)
+    """
+    import subprocess
+    logger.info("handle_model_switch: 开始执行模型切换工作流")
+    
+    # 1. 关闭 Upgrade 对话框
+    dismiss_img = os.path.join(templates_dir, "Dismiss.png")
+    success, _ = find_and_click(dismiss_img, confidence)
+    if not success:
+        logger.error("handle_model_switch: 无法找到 Dismiss.png，弹窗关闭失败")
+        return False
+    
+    time.sleep(1) # 等待弹窗完全消失
+    
+    # 2 & 3. 查找当前模型并切换
+    panel_claude = os.path.join(templates_dir, "panel-ClaudeOpus.png")
+    panel_gemini = os.path.join(templates_dir, "panel-Gemini.png")
+    
+    target_model_img = None
+    
+    # 尝试找 Claude
+    success, _ = find_and_click(panel_claude, confidence)
+    if success:
+        logger.info("handle_model_switch: 当前是 Claude，准备切换到 Gemini")
+        target_model_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
+    else:
+        # 尝试找 Gemini
+        success, _ = find_and_click(panel_gemini, confidence)
+        if success:
+            logger.info("handle_model_switch: 当前是 Gemini，准备切换到 Claude")
+            target_model_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
+        else:
+            logger.error("handle_model_switch: 无法在界面上找到当前模型标识 (panel-ClaudeOpus.png / panel-Gemini.png)")
+            return False
+            
+    time.sleep(1) # 等待下拉列表展开
+    
+    # 点击目标模型
+    success, _ = find_and_click(target_model_img, confidence)
+    if not success:
+        logger.error(f"handle_model_switch: 无法在列表中找到目标模型 ({target_model_img})")
+        return False
+        
+    time.sleep(1) # 等待界面切换
+    
+    # 4. 找到输入框并发送 continue
+    success, _ = click_input_box(templates_dir, confidence=confidence)
+    if not success:
+        logger.error("handle_model_switch: 切换模型后无法找到 input_box.png")
+        return False
+        
+    time.sleep(0.5)
+    
+    logger.info("handle_model_switch: 输入 continue... 并发送")
+    import copy
+    import pyperclip
+    # 备份旧剪贴板（虽然只是文本）
+    old_clip = pyperclip.paste()
+    pyperclip.copy("continue")
+    paste_and_submit()
+    pyperclip.copy(old_clip)
+    
+    logger.info("handle_model_switch: 切换工作流完成")
+    return True
 
 
 def full_workflow(
@@ -676,59 +766,16 @@ def full_workflow(
     logger.info("提交...")
     pyautogui.press('return')
     
-    # 5. 检测 Replying 状态
-    logger.info("等待 Replying 出现...")
-    appeared = False
-    start_time = time.time()
-    
-    while time.time() - start_time < 10:
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if found:
-            logger.info("检测到 Replying!")
-            appeared = True
-            break
-        time.sleep(0.5)
-    
-    if not appeared:
-        logger.info("Replying 未出现，任务可能已完成")
-        return
-    
-    # 6. 监控循环
-    last_action_time = time.time()
-    not_found_count = 0
-    max_not_found = 5
-    timeout = 300
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        time.sleep(1)
-        
-        # 检查 Replying 是否还在
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if not found:
-            not_found_count += 1
-            logger.info(f"Replying 未找到 ({not_found_count}/{max_not_found})")
-            if not_found_count >= max_not_found:
-                logger.info("Replying 消失，任务完成")
-                return
-            continue
-        
-        not_found_count = 0
-        
-        # 每8秒执行一次
-        if time.time() - last_action_time >= 8:
-            # 1) 发送 "思考中..." 状态
-            logger.info("发送状态: 思考中...")
-            send_status("思考中...")
-            
-            # 2) 点击 Accept 按钮
-            success, info = click_accept_button(templates_dir)
-            if success:
-                logger.info(f"Accept 按钮已点击: {info}")
-            
-            last_action_time = time.time()
-    
-    logger.info("监控超时")
+    # 5. 监控循环 (替换为直接调用 monitor_process)
+    replying_img = os.path.join(templates_dir, "Replying.png")
+    accept_img = os.path.join(templates_dir, "accept_button.png")
+    monitor_process(
+        replying_img,
+        accept_img,
+        templates_dir,
+        on_thinking=lambda: send_status("Thinking..."),
+        confidence=confidence
+    )
 
 
 def full_workflow_image(
@@ -767,6 +814,7 @@ def full_workflow_image(
             monitor_process(
                 replying_img,
                 accept_img,
+                templates_dir,
                 on_thinking=lambda: send_status("Thinking..."),
                 confidence=confidence
             )
