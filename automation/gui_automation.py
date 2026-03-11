@@ -660,12 +660,31 @@ def handle_model_switch(templates_dir: str, confidence: float = 0.8) -> bool:
     import subprocess
     logger.info("handle_model_switch: 开始执行模型切换工作流")
     
+    # 提前激活窗口，防止弹窗点击被吞(focus)
+    activate_window("antigravity")
+    time.sleep(0.5)
+    
     # 1. 关闭 Upgrade 对话框
     dismiss_img = os.path.join(templates_dir, "Dismiss.png")
-    success, _ = find_and_click(dismiss_img, confidence)
-    if not success:
-        logger.error("handle_model_switch: 无法找到 Dismiss.png，弹窗关闭失败")
+    
+    # 手动实现带重试和 focus 的点击
+    location = find_image(dismiss_img, confidence)
+    if not location:
+        logger.error("handle_model_switch: 无法找到 Dismiss.png，弹窗不显示或已关闭")
         return False
+        
+    click_x, click_y = location
+    logger.info(f"handle_model_switch: 找到 Dismiss.png，点击点 ({click_x}, {click_y})")
+    try:
+        # Move mouse and click twice to ensure the click registers through any inactive window states
+        subprocess.run(['xdotool', 'mousemove', str(int(click_x)), str(int(click_y))], check=True)
+        time.sleep(0.2)
+        subprocess.run(['xdotool', 'click', '1'], check=True)
+        time.sleep(0.2)
+        subprocess.run(['xdotool', 'click', '1'], check=True)
+    except Exception as e:
+        logger.warning(f"handle_model_switch: xdotool click failed: {e}. Falling back to pyautogui double click.")
+        pyautogui.click(click_x, click_y, clicks=2, interval=0.2)
     
     time.sleep(1) # 等待弹窗完全消失
     
