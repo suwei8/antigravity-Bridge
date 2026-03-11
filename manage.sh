@@ -111,8 +111,38 @@ EOF
 
         mkdir -p "$MCP_CONFIG_DIR"
 
-        # 获取当前 DISPLAY，默认为 :0
-        current_display="${DISPLAY:-:0}"
+        # 智能检测 DISPLAY（避免 SSH X11 forwarding 污染）
+        detect_display() {
+            # 1. 检查当前用户的 xRDP/Xorg 会话
+            local xrdp_display=$(ps aux | grep -E "Xorg.*-config xrdp" | grep -v grep | grep "$(whoami)" | sed -n 's/.*Xorg \(:[0-9]*\).*/\1/p' | head -1)
+            if [ -n "$xrdp_display" ] && [ -S "/tmp/.X11-unix/X${xrdp_display#:}" ]; then
+                echo "$xrdp_display"
+                return
+            fi
+            
+            # 2. 检查 Xvfb
+            local xvfb_display=$(ps aux | grep "Xvfb" | grep -v grep | sed -n 's/.*Xvfb \(:[0-9]*\).*/\1/p' | head -1)
+            if [ -n "$xvfb_display" ] && [ -S "/tmp/.X11-unix/X${xvfb_display#:}" ]; then
+                echo "$xvfb_display"
+                return
+            fi
+            
+            # 3. 如果 $DISPLAY 对应的 socket 存在且不像 SSH X11 forwarding（通常 >10）
+            if [ -n "$DISPLAY" ]; then
+                local display_num="${DISPLAY#:}"
+                display_num="${display_num%%.*}"
+                if [ -S "/tmp/.X11-unix/X${display_num}" ]; then
+                    echo "$DISPLAY"
+                    return
+                fi
+            fi
+            
+            # 4. 回退到 :0
+            echo ":0"
+        }
+        
+        current_display=$(detect_display)
+        info "检测到 DISPLAY: $current_display"
 
         cat > "$MCP_CONFIG_FILE" << EOF
 {
