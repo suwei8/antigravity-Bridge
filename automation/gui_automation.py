@@ -554,6 +554,7 @@ def monitor_process(
     accept_img: str,
     templates_dir: str,
     on_thinking: Optional[Callable[[], None]] = None,
+    on_switched: Optional[Callable[[], None]] = None,
     confidence: float = 0.8,
     accept_confidence: float = 0.6
 ):
@@ -614,6 +615,8 @@ def monitor_process(
                     logger.warning("MonitorProcess: 'Upgrade' dialog detected! Quota exhausted.")
                     if handle_model_switch(templates_dir, confidence=0.8):
                         logger.info("MonitorProcess: Model switched and continued successfully. Restarting monitor loop.")
+                        if on_switched:
+                            on_switched()
                         # 如果切换成功，重置计数器和时间，继续监控新生出的 Replying
                         start_time = time.time()
                         continue
@@ -774,6 +777,7 @@ def full_workflow(
         accept_img,
         templates_dir,
         on_thinking=lambda: send_status("Thinking..."),
+        on_switched=lambda: send_status("模型已切换！"),
         confidence=confidence
     )
 
@@ -816,6 +820,7 @@ def full_workflow_image(
                 accept_img,
                 templates_dir,
                 on_thinking=lambda: send_status("Thinking..."),
+                on_switched=lambda: send_status("模型已切换！"),
                 confidence=confidence
             )
         else:
@@ -979,38 +984,13 @@ def full_workflow_media_group(
         return
     
     # 7. 监控循环
-    last_action_time = time.time()
-    not_found_count = 0
-    max_not_found = 5
-    timeout = 300
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        time.sleep(1)
-        
-        # 检查 Replying 是否还在
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if not found:
-            not_found_count += 1
-            logger.info(f"Replying 未找到 ({not_found_count}/{max_not_found})")
-            if not_found_count >= max_not_found:
-                logger.info("Replying 消失，任务完成")
-                return
-            continue
-        
-        not_found_count = 0
-        
-        # 每8秒执行一次
-        if time.time() - last_action_time >= 8:
-            # 1) 发送 "思考中..." 状态
-            logger.info("发送状态: 思考中...")
-            send_status("思考中...")
-            
-            # 2) 点击 Accept 按钮
-            success, info = click_accept_button(templates_dir)
-            if success:
-                logger.info(f"Accept 按钮已点击: {info}")
-            
-            last_action_time = time.time()
-    
-    logger.info("监控超时")
+    replying_img = os.path.join(templates_dir, "Replying.png")
+    accept_img = os.path.join(templates_dir, "accept_button.png")
+    monitor_process(
+        replying_img,
+        accept_img,
+        templates_dir,
+        on_thinking=lambda: send_status("Thinking..."),
+        on_switched=lambda: send_status("模型已切换！"),
+        confidence=confidence
+    )
