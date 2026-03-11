@@ -613,8 +613,8 @@ def monitor_process(
         # Reset counter as we found it
         not_found_count = 0
         
-        # Send Thinking status every 5 seconds
-        if time.time() - last_thinking_time >= 5:
+        # Send Thinking status every 8 seconds
+        if time.time() - last_thinking_time >= 8:
             if on_thinking:
                 logger.info("MonitorProcess: Sending 'Thinking...'")
                 on_thinking()
@@ -715,8 +715,8 @@ def full_workflow(
         
         not_found_count = 0
         
-        # 每5秒执行一次
-        if time.time() - last_action_time >= 5:
+        # 每8秒执行一次
+        if time.time() - last_action_time >= 8:
             # 1) 发送 "思考中..." 状态
             logger.info("发送状态: 思考中...")
             send_status("思考中...")
@@ -952,8 +952,8 @@ def full_workflow_media_group(
         
         not_found_count = 0
         
-        # 每5秒执行一次
-        if time.time() - last_action_time >= 5:
+        # 每8秒执行一次
+        if time.time() - last_action_time >= 8:
             # 1) 发送 "思考中..." 状态
             logger.info("发送状态: 思考中...")
             send_status("思考中...")
