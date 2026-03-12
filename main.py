@@ -75,6 +75,7 @@ class AntigravityBridge:
         self.templates_dir: str = ""
         self._retry_monitor_running = False
         self.mcp_server: Optional[MCPServer] = None  # MCP Server 引用，用于设置 last_chat_id
+        self.mcp_replied_event = threading.Event()  # 全局中断信号，MCP发信时置位
         
     def setup(self) -> bool:
         """Initialize the application."""
@@ -280,6 +281,7 @@ class AntigravityBridge:
         # Process in background thread
         def process():
             try:
+                self.mcp_replied_event.clear()  # 开始新工作流时重置标志
                 sender = messages[0].from_user
                 
                 def send_status(status: str):
@@ -294,13 +296,15 @@ class AntigravityBridge:
                         content_with_context,
                         self.templates_dir,
                         send_status,
+                        interrupt_event=self.mcp_replied_event,
                         file_paths=file_paths  # 传递非图片文件路径
                     )
                 else:
                     full_workflow(
                         content_with_context,
                         self.templates_dir,
-                        send_status
+                        send_status,
+                        interrupt_event=self.mcp_replied_event
                     )
             finally:
                 # Cleanup downloaded files
@@ -326,6 +330,7 @@ class AntigravityBridge:
             # Handle escaped newlines
             safe_text = text.replace("\\n", "\n")
             self.bot.send_message(chat_id=chat_id, text=safe_text)
+            self.mcp_replied_event.set()  # 触发软中断，终止界面的 Thinking 心跳死循环
             return None
         except Exception as e:
             logger.error(f"Error sending to Telegram: {e}")

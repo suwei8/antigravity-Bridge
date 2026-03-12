@@ -556,7 +556,8 @@ def monitor_process(
     on_thinking: Optional[Callable[[], None]] = None,
     on_switched: Optional[Callable[[], None]] = None,
     confidence: float = 0.8,
-    accept_confidence: float = 0.6
+    accept_confidence: float = 0.6,
+    interrupt_event: threading.Event = None
 ):
     """
     Monitor the reply process and interact as needed.
@@ -571,8 +572,11 @@ def monitor_process(
         replying_img: Path to "Replying" indicator template
         accept_img: Path to accept button template
         on_thinking: Callback to invoke when sending thinking status
+        on_switched: Callback to invoke when model is switched
         confidence: Image matching confidence threshold for replying indicator
         accept_confidence: Confidence threshold for accept button (default 0.6)
+        interrupt_event: An optional threading.Event to signal early termination.
+                         If set, the monitoring loop will exit.
     """
     logger.info("MonitorProcess: Starting loop...")
     
@@ -582,6 +586,10 @@ def monitor_process(
     start_time = time.time()
     
     while time.time() - start_time < 10:
+        if interrupt_event and interrupt_event.is_set():
+            logger.info("MonitorProcess: Interrupt event set during Phase 1. Exiting.")
+            return True # Indicate successful interruption
+        
         if find_image(replying_img, confidence):
             logger.info("MonitorProcess: 'Replying' detected! Entering monitor loop.")
             appeared = True
@@ -606,7 +614,7 @@ def monitor_process(
     
     if not appeared:
         logger.info("MonitorProcess: 'Replying' never appeared. Assuming finished or missed.")
-        return
+        return True # Or False, depending on desired behavior for "never appeared"
     
     # Phase 2: Monitor Loop
     last_thinking_time = time.time()
@@ -616,6 +624,10 @@ def monitor_process(
     start_time = time.time()
     
     while time.time() - start_time < timeout:
+        if interrupt_event and interrupt_event.is_set():
+            logger.info("MonitorProcess: Interrupt event set during Phase 2. Exiting.")
+            return True # Indicate successful interruption
+            
         time.sleep(1)
         
         # Check if Replying indicator is still present
@@ -777,7 +789,8 @@ def full_workflow(
     text: str,
     templates_dir: str,
     send_status: Callable[[str], None],
-    confidence: float = 0.8
+    confidence: float = 0.8,
+    interrupt_event: threading.Event = None
 ):
     """
     执行完整的文字消息工作流:
@@ -797,6 +810,7 @@ def full_workflow(
         templates_dir: 模板目录路径
         send_status: 发送状态消息的回调函数
         confidence: 图像匹配置信度
+        interrupt_event: An optional threading.Event to signal early termination.
     """
     # 1. 复制文本到剪贴板
     if not set_clipboard(text):
@@ -830,7 +844,8 @@ def full_workflow(
         templates_dir,
         on_thinking=lambda: send_status("思考中..."),
         on_switched=lambda: send_status("模型已切换！"),
-        confidence=confidence
+        confidence=confidence,
+        interrupt_event=interrupt_event
     )
 
 
@@ -838,7 +853,8 @@ def full_workflow_image(
     image_path: str,
     templates_dir: str,
     send_status: Callable[[str], None],
-    confidence: float = 0.8
+    confidence: float = 0.8,
+    interrupt_event: threading.Event = None
 ):
     """
     Execute the full image workflow:
@@ -846,6 +862,13 @@ def full_workflow_image(
     2. Find and click input box
     3. Paste and submit
     4. Monitor process
+    
+    Args:
+        image_path: Path to the image file
+        templates_dir: Path to the templates directory
+        send_status: Callback to send status messages
+        confidence: Image matching confidence threshold
+        interrupt_event: An optional threading.Event to signal early termination.
     """
     # 1. Copy Image to Clipboard
     success, clip_process = set_clipboard_image(image_path)
@@ -873,7 +896,8 @@ def full_workflow_image(
                 templates_dir,
                 on_thinking=lambda: send_status("思考中..."),
                 on_switched=lambda: send_status("模型已切换！"),
-                confidence=confidence
+                confidence=confidence,
+                interrupt_event=interrupt_event
             )
         else:
             logger.error("Could not find input_box.png")
@@ -896,7 +920,8 @@ def full_workflow_media_group(
     templates_dir: str,
     send_status: Callable[[str], None],
     confidence: float = 0.8,
-    file_paths: List[str] = None
+    file_paths: List[str] = None,
+    interrupt_event: threading.Event = None
 ):
     """
     执行完整的多图+文字+文件消息工作流:
