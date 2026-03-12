@@ -5,7 +5,6 @@
 
 APP_NAME="antigravity-bridge"
 REPO="suwei8/antigravity-Bridge"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
 LOG_FILE="app.log"
 PID_FILE="app.pid"
 
@@ -91,10 +90,32 @@ setup_env() {
 deploy() {
     info "开始部署..."
     check_dependencies
+    
+    if [ ! -f .env ]; then
+        error "未找到 .env 配置文件，无法获取 GITHUB_TOKEN。请先创建 .env 并包含 GITHUB_TOKEN。"
+        exit 1
+    fi
+    set -a; source .env; set +a
+    
+    if [ -z "$GITHUB_TOKEN" ]; then
+        error "部署失败: .env 中缺少 GITHUB_TOKEN，无法访问私有仓库。"
+        exit 1
+    fi
+
+    info "正在通过 GitHub API 获取最新版本下载地址..."
+    # 使用 GitHub API 获取最新 Release 的资产 URL
+    local asset_url=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+        "https://api.github.com/repos/${REPO}/releases/latest" | \
+        grep -o '"url": "https://api.github.com/repos/.*/assets/[0-9]*"' | head -1 | cut -d '"' -f 4)
+
+    if [ -z "$asset_url" ]; then
+        error "无法获取最新版本下载地址，请检测 Token 权限或仓库是否存在 Release。"
+        exit 1
+    fi
 
     info "正在下载最新版本..."
     local tmp_file="${APP_NAME}.tmp"
-    if curl -L -o "$tmp_file" "$DOWNLOAD_URL"; then
+    if curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" -o "$tmp_file" "$asset_url"; then
         chmod +x "$tmp_file"
         mv -f "$tmp_file" "$APP_NAME"
         info "下载成功并通过验证。"
@@ -173,20 +194,55 @@ EOF
 update() {
     info "开始更新到最新版本..."
     check_dependencies
-
-    # 获取最新版本 Tag
-    info "正在获取最新版本信息..."
-    local latest_tag=$(curl -sI "https://github.com/${REPO}/releases/latest" | grep -i location | awk -F/ '{print $NF}' | tr -d '\r')
     
-    if [ -z "$latest_tag" ]; then
-        error "无法获取最新版本号，将直接尝试下载 latest。"
+    if [ ! -f .env ]; then
+        error "未找到 .env 配置文件，无法获取 GITHUB_TOKEN 访问私有仓库。请先处理。"
+        exit 1
+    fi
+    set -a; source .env; set +a
+
+    if [ -z "$GITHUB_TOKEN" ]; then
+        error "更新失败: .env 中缺少 GITHUB_TOKEN 访问私有仓库。"
+        exit 1
+    fi
+
+    # 更新脚本自身
+    info "正在检查管理脚本更新..."
+    local script_tmp="manage.sh.tmp"
+    if curl -s -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" \
+        -o "$script_tmp" "https://api.github.com/repos/${REPO}/contents/manage.sh"; then
+        if ! cmp -s "$script_tmp" "$0"; then
+            info "发现新版管理脚本，正在更新自身并重新执行..."
+            mv -f "$script_tmp" "$0"
+            chmod +x "$0"
+            # 重新执行新版脚本的 update 命令
+            exec bash "$0" update
+            exit 0
+        else
+            info "管理脚本已是最新。"
+            rm -f "$script_tmp"
+        fi
+    else
+        error "无法检查管理脚本更新，忽略。"
+        rm -f "$script_tmp"
+    fi
+
+    # 获取最新版本 Tag 和资产下载地址
+    info "正在获取最新版本信息..."
+    local api_response=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${REPO}/releases/latest")
+    local latest_tag=$(echo "$api_response" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d '"' -f 4)
+    local asset_url=$(echo "$api_response" | grep -o '"url": "https://api.github.com/repos/.*/assets/[0-9]*"' | head -1 | cut -d '"' -f 4)
+    
+    if [ -z "$latest_tag" ] || [ -z "$asset_url" ]; then
+        error "无法获取最新版本号或下载地址。可能是 Token 权限不足或无 Release。"
+        exit 1
     else
         info "发现最新版本: ${GREEN}${latest_tag}${NC}"
     fi
 
-    info "正在下载最新版本..."
+    info "正在下载最新版本二进制..."
     local tmp_file="${APP_NAME}.tmp"
-    if curl -L -o "$tmp_file" "$DOWNLOAD_URL"; then
+    if curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" -o "$tmp_file" "$asset_url"; then
         chmod +x "$tmp_file"
         
         info "正在停止当前服务..."
@@ -198,7 +254,7 @@ update() {
         info "更新成功 (${latest_tag:-latest})，正在启动服务..."
         start
     else
-        error "下载失败，请检查网络。"
+        error "下载最新二进制文件失败，请检查网络。"
         rm -f "$tmp_file"
     fi
 }
