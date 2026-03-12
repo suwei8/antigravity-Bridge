@@ -69,6 +69,25 @@ check_dependencies() {
     fi
 }
 
+setup_env() {
+    # 获取当前 DISPLAY，优先从进程中或 w 命令检测，默认为 :0
+    local detected_display=$(w | grep -o ':[0-9]\+\.[0-9]\+' | head -1)
+    if [ -z "$detected_display" ]; then
+        detected_display=$(w | grep -o ':[0-9]\+' | head -1)
+    fi
+    export DISPLAY="${detected_display:-:0}"
+    export XAUTHORITY="$HOME/.Xauthority"
+    info "检测并配置环境变量: DISPLAY=$DISPLAY, XAUTHORITY=$XAUTHORITY"
+
+    # 强制更新或追加到 .env，以备其他场景读取
+    if [ -f .env ]; then
+        sed -i '/^DISPLAY=/d' .env 2>/dev/null || true
+        sed -i '/^XAUTHORITY=/d' .env 2>/dev/null || true
+        echo "DISPLAY=$DISPLAY" >> .env
+        echo "XAUTHORITY=$XAUTHORITY" >> .env
+    fi
+}
+
 deploy() {
     info "开始部署..."
     check_dependencies
@@ -112,12 +131,7 @@ EOF
         mkdir -p "$MCP_CONFIG_DIR"
 
         # 获取当前 DISPLAY，优先从进程中或 w 命令检测，默认为 :0
-        detected_display=$(w | grep -o ':[0-9]\+\.[0-9]\+' | head -1)
-        if [ -z "$detected_display" ]; then
-            detected_display=$(w | grep -o ':[0-9]\+' | head -1)
-        fi
-        current_display="${detected_display:-:0}"
-        info "检测到当前 DISPLAY: $current_display"
+        setup_env
 
         cat > "$MCP_CONFIG_FILE" << EOF
 {
@@ -128,7 +142,8 @@ EOF
       "env": {
         "TELEGRAM_BOT_TOKEN": "$token",
         "TELEGRAM_CHAT_ID": "$chat_id",
-        "DISPLAY": "$current_display"
+        "DISPLAY": "$DISPLAY",
+        "XAUTHORITY": "$XAUTHORITY"
       }
     }
   }
@@ -212,6 +227,9 @@ start() {
     set -a
     source .env
     set +a
+
+    # 再次检测并覆盖环境变量（防止 .env 中的值过时或缺失）
+    setup_env
 
     info "正在启动 $APP_NAME..."
     nohup ./$APP_NAME > "$LOG_FILE" 2>&1 &
