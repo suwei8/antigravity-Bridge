@@ -586,6 +586,22 @@ def monitor_process(
             logger.info("MonitorProcess: 'Replying' detected! Entering monitor loop.")
             appeared = True
             break
+            
+        # 增加提前检查弹窗的逻辑，因为如果配额已耗尽，可能不会出现 Replying 而是直接弹窗
+        upgrade_img = os.path.join(templates_dir, "Upgrade.png")
+        upgrade2_img = os.path.join(templates_dir, "Upgrade2.png")
+        if find_image(upgrade_img, confidence=0.8) or find_image(upgrade2_img, confidence=0.8):
+            logger.warning("MonitorProcess: 'Upgrade' dialog detected while waiting for Replying! Quota exhausted.")
+            if handle_model_switch(templates_dir, confidence=0.8):
+                logger.info("MonitorProcess: Model switched. Restarting Phase 1 loop.")
+                if on_switched:
+                    on_switched()
+                start_time = time.time()  # 切换成功，重置10s等待阶段，继续等待新回复
+                continue
+            else:
+                logger.error("MonitorProcess: Model switch failed in phase 1. Stopping loop.")
+                return False
+
         time.sleep(0.5)
     
     if not appeared:
@@ -987,24 +1003,7 @@ def full_workflow_media_group(
     logger.info("提交...")
     pyautogui.press('return')
     
-    # 6. 检测 Replying 状态
-    logger.info("等待 Replying 出现...")
-    appeared = False
-    start_time = time.time()
-    
-    while time.time() - start_time < 10:
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if found:
-            logger.info("检测到 Replying!")
-            appeared = True
-            break
-        time.sleep(0.5)
-    
-    if not appeared:
-        logger.info("Replying 未出现，任务可能已完成")
-        return
-    
-    # 7. 监控循环
+    # 6. 监控循环 (替换为直接调用 monitor_process)
     replying_img = os.path.join(templates_dir, "Replying.png")
     accept_img = os.path.join(templates_dir, "accept_button.png")
     monitor_process(

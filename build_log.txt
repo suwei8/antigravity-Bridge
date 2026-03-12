@@ -1,0 +1,26 @@
+54 INFO: PyInstaller: 6.18.0, contrib hooks: 2026.0
+54 INFO: Python: 3.8.10
+63 INFO: Platform: Linux-5.15.0-1081-oracle-aarch64-with-glibc2.29
+63 INFO: Python environment: /home/sw/dev_root/antigravity-Bridge/venv
+67 INFO: Module search paths (PYTHONPATH):
+['/usr/lib/python38.zip',
+ '/usr/lib/python3.8',
+ '/usr/lib/python3.8/lib-dynload',
+ '/home/sw/dev_root/antigravity-Bridge/venv/lib/python3.8/site-packages',
+ '/home/sw/dev_root/antigravity-Bridge']
+261 INFO: Appending 'binaries' from .spec
+261 INFO: Appending 'datas' from .spec
+261 INFO: checking Analysis
+292 INFO: checking PYZ
+331 INFO: checking PKG
+332 INFO: Building PKG because PKG-00.toc is non existent
+332 INFO: Building PKG (CArchive) antigravity-bridge.pkg
+17504 INFO: Building PKG (CArchive) antigravity-bridge.pkg completed successfully.
+17528 INFO: Bootloader /home/sw/dev_root/antigravity-Bridge/venv/lib/python3.8/site-packages/PyInstaller/bootloader/Linux-64bit-arm/run
+17528 INFO: checking EXE
+17529 INFO: Building EXE because EXE-00.toc is non existent
+17529 INFO: Building EXE from EXE-00.toc
+17529 INFO: Copying bootloader EXE to /home/sw/dev_root/antigravity-Bridge/dist/antigravity-bridge
+17529 INFO: Appending PKG archive to custom ELF section in EXE
+17757 INFO: Building EXE from EXE-00.toc completed successfully.
+17777 INFO: Build complete! The results are available in: /home/sw/dev_root/antigravity-Bridge/dist
