@@ -646,13 +646,13 @@ def monitor_process(
                     return True
             continue
         
-        # Reset counter as we found it
+        # Replying 确认可见，重置计数器
         not_found_count = 0
         
-        # Send Thinking status every 8 seconds
+        # 只有在 Replying 确认可见的情况下，且距上次发送已满 8 秒，才发送 Thinking
         if time.time() - last_thinking_time >= 8:
             if on_thinking:
-                logger.info("MonitorProcess: Sending 'Thinking...'")
+                logger.info("MonitorProcess: Replying 可见且已过 8 秒，发送 'Thinking...'")
                 on_thinking()
             last_thinking_time = time.time()
         
