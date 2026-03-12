@@ -102,20 +102,11 @@ deploy() {
         exit 1
     fi
 
-    info "正在通过 GitHub API 获取最新版本下载地址..."
-    # 使用 GitHub API 获取最新 Release 的资产 URL
-    local asset_url=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        "https://api.github.com/repos/${REPO}/releases/latest" | \
-        grep -o '"url": "https://api.github.com/repos/.*/assets/[0-9]*"' | head -1 | cut -d '"' -f 4)
-
-    if [ -z "$asset_url" ]; then
-        error "无法获取最新版本下载地址，请检测 Token 权限或仓库是否存在 Release。"
-        exit 1
-    fi
-
     info "正在下载最新版本..."
     local tmp_file="${APP_NAME}.tmp"
-    if curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" -o "$tmp_file" "$asset_url"; then
+    local download_url="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
+    
+    if wget --header "Authorization: token $GITHUB_TOKEN" -O "$tmp_file" "$download_url"; then
         chmod +x "$tmp_file"
         mv -f "$tmp_file" "$APP_NAME"
         info "下载成功并通过验证。"
@@ -227,34 +218,25 @@ update() {
         rm -f "$script_tmp"
     fi
 
-    # 获取最新版本 Tag 和资产下载地址
-    info "正在获取最新版本信息..."
-    local api_response=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${REPO}/releases/latest")
-    local latest_tag=$(echo "$api_response" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d '"' -f 4)
-    local asset_url=$(echo "$api_response" | grep -o '"url": "https://api.github.com/repos/.*/assets/[0-9]*"' | head -1 | cut -d '"' -f 4)
-    
-    if [ -z "$latest_tag" ] || [ -z "$asset_url" ]; then
-        error "无法获取最新版本号或下载地址。可能是 Token 权限不足或无 Release。"
-        exit 1
-    else
-        info "发现最新版本: ${GREEN}${latest_tag}${NC}"
-    fi
-
+    # 直接下载最新二进制文件
     info "正在下载最新版本二进制..."
     local tmp_file="${APP_NAME}.tmp"
-    if curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" -o "$tmp_file" "$asset_url"; then
+    local download_url="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
+    
+    if wget --header "Authorization: token $GITHUB_TOKEN" -O "$tmp_file" "$download_url"; then
         chmod +x "$tmp_file"
         
         info "正在停止当前服务..."
         stop
+        sleep 2
         
         info "替换可执行文件..."
         mv -f "$tmp_file" "$APP_NAME"
         
-        info "更新成功 (${latest_tag:-latest})，正在启动服务..."
+        info "更新成功，正在启动服务..."
         start
     else
-        error "下载最新二进制文件失败，请检查网络。"
+        error "下载最新二进制文件失败，请检查网络或 Token 权限。"
         rm -f "$tmp_file"
     fi
 }
