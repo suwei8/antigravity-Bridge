@@ -91,22 +91,11 @@ deploy() {
     info "开始部署..."
     check_dependencies
     
-    if [ ! -f .env ]; then
-        error "未找到 .env 配置文件，无法获取 GITHUB_TOKEN。请先创建 .env 并包含 GITHUB_TOKEN。"
-        exit 1
-    fi
-    set -a; source .env; set +a
-    
-    if [ -z "$GITHUB_TOKEN" ]; then
-        error "部署失败: .env 中缺少 GITHUB_TOKEN，无法访问私有仓库。"
-        exit 1
-    fi
-
     info "正在下载最新版本..."
     local tmp_file="${APP_NAME}.tmp"
     local download_url="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
     
-    if wget --header "Authorization: token $GITHUB_TOKEN" -O "$tmp_file" "$download_url"; then
+    if wget -O "$tmp_file" "$download_url"; then
         chmod +x "$tmp_file"
         mv -f "$tmp_file" "$APP_NAME"
         info "下载成功并通过验证。"
@@ -185,45 +174,13 @@ EOF
 update() {
     info "开始更新到最新版本..."
     check_dependencies
-    
-    if [ ! -f .env ]; then
-        error "未找到 .env 配置文件，无法获取 GITHUB_TOKEN 访问私有仓库。请先处理。"
-        exit 1
-    fi
-    set -a; source .env; set +a
-
-    if [ -z "$GITHUB_TOKEN" ]; then
-        error "更新失败: .env 中缺少 GITHUB_TOKEN 访问私有仓库。"
-        exit 1
-    fi
-
-    # 更新脚本自身
-    info "正在检查管理脚本更新..."
-    local script_tmp="manage.sh.tmp"
-    if curl -s -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" \
-        -o "$script_tmp" "https://api.github.com/repos/${REPO}/contents/manage.sh"; then
-        if ! cmp -s "$script_tmp" "$0"; then
-            info "发现新版管理脚本，正在更新自身并重新执行..."
-            mv -f "$script_tmp" "$0"
-            chmod +x "$0"
-            # 重新执行新版脚本的 update 命令
-            exec bash "$0" update
-            exit 0
-        else
-            info "管理脚本已是最新。"
-            rm -f "$script_tmp"
-        fi
-    else
-        error "无法检查管理脚本更新，忽略。"
-        rm -f "$script_tmp"
-    fi
 
     # 直接下载最新二进制文件
     info "正在下载最新版本二进制..."
     local tmp_file="${APP_NAME}.tmp"
     local download_url="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
     
-    if wget --header "Authorization: token $GITHUB_TOKEN" -O "$tmp_file" "$download_url"; then
+    if wget -O "$tmp_file" "$download_url"; then
         chmod +x "$tmp_file"
         
         info "正在停止当前服务..."
@@ -236,7 +193,7 @@ update() {
         info "更新成功，正在启动服务..."
         start
     else
-        error "下载最新二进制文件失败，请检查网络或 Token 权限。"
+        error "下载最新二进制文件失败，请检查网络。"
         rm -f "$tmp_file"
     fi
 }
