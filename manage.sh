@@ -111,8 +111,13 @@ EOF
 
         mkdir -p "$MCP_CONFIG_DIR"
 
-        # 获取当前 DISPLAY，默认为 :0
-        current_display="${DISPLAY:-:0}"
+        # 获取当前 DISPLAY，优先从进程中或 w 命令检测，默认为 :0
+        detected_display=$(w | grep -o ':[0-9]\+\.[0-9]\+' | head -1)
+        if [ -z "$detected_display" ]; then
+            detected_display=$(w | grep -o ':[0-9]\+' | head -1)
+        fi
+        current_display="${detected_display:-:0}"
+        info "检测到当前 DISPLAY: $current_display"
 
         cat > "$MCP_CONFIG_FILE" << EOF
 {
@@ -225,29 +230,23 @@ start() {
 }
 
 stop() {
+    info "正在停止所有相关进程..."
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE")
-        info "正在停止程序 (PID: $pid)..."
+        info "正在停止主程序 (PID: $pid)..."
         kill $pid 2>/dev/null
-        
-        # 等待进程退出
-        for i in {1..5}; do
-            if ! kill -0 $pid 2>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
-        
-        if kill -0 $pid 2>/dev/null; then
-            info "强制清理..."
-            kill -9 $pid 2>/dev/null
-        fi
-        
-        rm "$PID_FILE"
-        info "程序已停止。"
+        rm -f "$PID_FILE"
+    fi
+    
+    # 强制清理所有 antigravity-bridge 进程（包括 IDE 后台启动的）
+    pkill -9 -f "antigravity-bridge" 2>/dev/null
+    sleep 1
+    
+    # 再次检查
+    if pgrep -f "antigravity-bridge" > /dev/null; then
+        error "警告：仍有进程未能正常退出，请手动检查"
     else
-        info "程序未运行 (找不到 PID 文件)。尝试使用 pkill 清理..."
-        pkill -f "./$APP_NAME"
+        info "程序已停止。"
     fi
 }
 

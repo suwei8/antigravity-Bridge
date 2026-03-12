@@ -549,88 +549,235 @@ def paste_and_submit():
     pyautogui.press('return')
 
 
+switch_history = []
+
+def handle_model_switch(templates_dir: str, send_status: Optional[Callable[[str], None]]) -> str:
+    """
+    检查模型配额耗尽并自动切换模型。
+    返回状态:
+    - "NOT_FOUND": 未发现 Upgrade 弹窗
+    - "SWITCHED": 成功切换了模型并输入了 continue
+    - "LIMIT_REACHED": 短时间内切换达到上限，已发送停止通知
+    """
+    global switch_history
+    
+    current_time = time.time()
+    # 清理过期记录 (20秒之前的)
+    switch_history = [t for t in switch_history if current_time - t <= 20]
+    
+    # 1. 检查 Upgrade 图像
+    upgrade_found = False
+    for template in ["Upgrade.png", "Upgrade2.png"]:
+        if find_image(os.path.join(templates_dir, template), confidence=0.8):
+            upgrade_found = True
+            break
+            
+    if not upgrade_found:
+        return "NOT_FOUND"
+        
+    logger.info("检测到 Upgrade 弹窗，开始处理模型切换逻辑")
+    
+    # 检查是否 20 秒内执行过 2 次
+    if len(switch_history) >= 2:
+        logger.warning("20秒内已执行过2次 continue，模型仍然耗尽，发送通知并停止。")
+        if send_status:
+            send_status("账号配额已用尽，请手动切换账号")
+        return "LIMIT_REACHED"
+        
+    # 2. 查找 Dismiss.png 并关闭
+    dismiss_path = os.path.join(templates_dir, "Dismiss.png")
+    success, _ = find_and_click(dismiss_path, confidence=0.8)
+    if success:
+        logger.info("已点击 Dismiss.png 关闭弹窗")
+        time.sleep(0.5)
+    else:
+        logger.warning("未找到 Dismiss.png，继续尝试后面的步骤")
+        
+    # 3. 查找 模型选择面板
+    panel_opus = os.path.join(templates_dir, "panel-ClaudeOpus.png")
+    panel_gemini = os.path.join(templates_dir, "panel-Gemini.png")
+    
+    found_panel = None
+    if find_and_click(panel_opus, confidence=0.8)[0]:
+        found_panel = "opus"
+    elif find_and_click(panel_gemini, confidence=0.8)[0]:
+        found_panel = "gemini"
+        
+    if not found_panel:
+        logger.warning("未找到相应的模型选择面板")
+        return "NOT_FOUND"
+        
+    time.sleep(2)
+    
+    # 4. 根据当前面板选择备用模型
+    if found_panel == "opus":
+        target_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
+        if find_and_click(target_img, confidence=0.8)[0]:
+            logger.info("成功点击 Gemini3.1Pro-High.png")
+        else:
+            logger.warning("未找到 Gemini3.1Pro-High.png")
+    else:
+        target_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
+        if find_and_click(target_img, confidence=0.8)[0]:
+            logger.info("成功点击 Claude-Opus-4.6-Thinking.png")
+        else:
+            logger.warning("未找到 Claude-Opus-4.6-Thinking.png")
+            
+    time.sleep(0.5)
+    
+    # 5. 输入 continue + 回车
+    success, debug = click_input_box(templates_dir)
+    if success:
+        time.sleep(0.3)
+        pyautogui.typewrite("continue")
+        time.sleep(0.3)
+        pyautogui.press('return')
+        logger.info("已提交 continue")
+        
+        # 记录本次执行时间
+        switch_history.append(time.time())
+        return "SWITCHED"
+    else:
+        logger.warning(f"无法点击输入框发送 continue: {debug}")
+        # 如果找不到输入框也记录一次，防止死循环
+        switch_history.append(time.time())
+        return "SWITCHED"
+
+
 def monitor_process(
-    replying_img: str,
-    accept_img: str,
-    on_thinking: Optional[Callable[[], None]] = None,
-    confidence: float = 0.8,
-    accept_confidence: float = 0.6,
+    templates_dir: str,
+    send_status: Optional[Callable[[str], None]] = None,
     reply_event=None
 ):
     """
     Monitor the reply process and interact as needed.
-    
-    This function:
-    1. Waits for "Replying" indicator to appear
-    2. Monitors the process, clicking "Accept" button when it appears
-    3. Sends "Thinking..." status periodically
-    4. Exits when "Replying" indicator disappears or reply_event is set
-    
-    Args:
-        replying_img: Path to "Replying" indicator template
-        accept_img: Path to accept button template
-        on_thinking: Callback to invoke when sending thinking status
-        confidence: Image matching confidence threshold for replying indicator
-        accept_confidence: Confidence threshold for accept button (default 0.6)
-        reply_event: threading.Event, set when MCP reply is sent (stops thinking)
     """
+    global switch_history
     logger.info("MonitorProcess: Starting loop...")
+    did_switch = False  # 标记是否刚执行过模型切换
     
-    # Phase 1: Wait for Replying to appear (Max 10s)
     logger.info("MonitorProcess: Waiting for 'Replying' to appear...")
     appeared = False
     start_time = time.time()
     
     while time.time() - start_time < 10:
-        if find_image(replying_img, confidence):
+        # 检查 MCP 是否已经回复
+        if reply_event and reply_event.is_set():
+            logger.info("MonitorProcess: reply_event set during wait phase. Stopping.")
+            return
+        found, _ = find_replying(templates_dir)
+        if found:
             logger.info("MonitorProcess: 'Replying' detected! Entering monitor loop.")
             appeared = True
             break
         time.sleep(0.5)
     
     if not appeared:
-        logger.info("MonitorProcess: 'Replying' never appeared. Assuming finished or missed.")
-        return
+        # 如果 Replying 没出现，检查是否刚刚执行过切换
+        # 如果 20 秒内已有 2+ 次切换记录，说明两个模型都用尽了
+        current_time = time.time()
+        recent_switches = [t for t in switch_history if current_time - t <= 20]
+        if len(recent_switches) >= 2:
+            logger.warning("MonitorProcess: Replying 未出现且 20 秒内已切换 2 次，发送配额用尽通知")
+            if send_status:
+                send_status("账号配额已用尽，请手动切换账号")
+            return
+            
+        # Replying 没出现，也可能是直接弹出了 Upgrade 弹窗！
+        logger.info("MonitorProcess: 'Replying' never appeared. Checking for Upgrade dialog...")
+        switch_status = handle_model_switch(templates_dir, send_status)
+        if switch_status == "LIMIT_REACHED":
+            logger.info("MonitorProcess: 达到切换上限，退出！")
+            return
+        elif switch_status == "SWITCHED":
+            logger.info("MonitorProcess: 在初始等待中发现 Upgrade 弹窗并成功切换。进入常规监控...")
+            appeared = True
+            # 直接进入下面的常规监控循环，等待新的 Replying
+        else:
+            logger.info("MonitorProcess: 'Replying' never appeared and no Upgrade dialog found. Assuming finished or missed.")
+            return
     
-    # Phase 2: Monitor Loop
-    last_thinking_time = time.time()
+    last_action_time = time.time()
     not_found_count = 0
-    max_not_found = 5
-    timeout = 300  # 5 minutes safety timeout
+    max_not_found = 3  # Based on user requirement: 3 seconds
+    timeout = 300
     start_time = time.time()
     
     while time.time() - start_time < timeout:
-        # Check if MCP has already sent a reply
         if reply_event and reply_event.is_set():
             logger.info("MonitorProcess: reply_event set, IDE has replied. Stopping.")
             return
         
         time.sleep(1)
         
-        # Check if Replying indicator is still present
-        if not find_image(replying_img, confidence):
+        found, _ = find_replying(templates_dir)
+        if not found:
             not_found_count += 1
             logger.info(f"MonitorProcess: 'Replying' not found ({not_found_count}/{max_not_found})")
             
             if not_found_count >= max_not_found:
-                logger.info("MonitorProcess: 'Replying' gone. Stopping loop.")
-                return
+                switch_status = handle_model_switch(templates_dir, send_status)
+                if switch_status == "LIMIT_REACHED":
+                    logger.info("MonitorProcess: 达到切换上限，退出！")
+                    return
+                elif switch_status == "SWITCHED":
+                    logger.info("MonitorProcess: 已尝试切换模型，重新等待 Replying...")
+                    not_found_count = 0
+                    # 切换后等待 8 秒看 Replying 是否重新出现
+                    time.sleep(2)
+                    re_appeared = False
+                    wait_start = time.time()
+                    while time.time() - wait_start < 8:
+                        if reply_event and reply_event.is_set():
+                            logger.info("MonitorProcess: reply_event set after switch. Stopping.")
+                            return
+                        f, _ = find_replying(templates_dir)
+                        if f:
+                            logger.info("MonitorProcess: Replying 重新出现！继续监控")
+                            re_appeared = True
+                            break
+                        time.sleep(0.5)
+                    
+                    if not re_appeared:
+                        # Replying 没重新出现，检查是否已经切换了 2 次
+                        current_time = time.time()
+                        recent = [t for t in switch_history if current_time - t <= 20]
+                        if len(recent) >= 2:
+                            logger.warning("MonitorProcess: 切换后 Replying 仍未出现，且已切换 2 次，发送配额用尽通知")
+                            if send_status:
+                                send_status("账号配额已用尽，请手动切换账号")
+                            return
+                        else:
+                            logger.info("MonitorProcess: 切换后 Replying 未出现，但切换次数未达上限，继续监控")
+                    
+                    # 重置计时器继续监控
+                    start_time = time.time()
+                    last_action_time = time.time()
+                    continue
+                else:
+                    # NOT_FOUND: 没有 Upgrade 弹窗
+                    # 检查是否最近执行过切换但模型仍然不工作
+                    current_time = time.time()
+                    recent = [t for t in switch_history if current_time - t <= 20]
+                    if len(recent) >= 2:
+                        logger.warning("MonitorProcess: Replying 消失，无 Upgrade 弹窗但 20s 内已切换 2 次，发送配额用尽通知")
+                        if send_status:
+                            send_status("账号配额已用尽，请手动切换账号")
+                        return
+                    logger.info("MonitorProcess: 'Replying' gone and no Upgrade dialog. Stopping loop.")
+                    return
             continue
         
-        # Reset counter as we found it
         not_found_count = 0
         
-        # Send Thinking status every 5 seconds
-        if time.time() - last_thinking_time >= 5:
-            if on_thinking:
+        if time.time() - last_action_time >= 5:
+            if send_status:
                 logger.info("MonitorProcess: Sending 'Thinking...'")
-                on_thinking()
-            last_thinking_time = time.time()
-        
-        # Check and click Accept button (uses lower confidence)
-        if find_image(accept_img, accept_confidence):
-            logger.info("MonitorProcess: Found Accept button. Clicking...")
-            find_and_click(accept_img, accept_confidence)
+                send_status("思考中...")
+            success, info = click_accept_button(templates_dir)
+            if success:
+                logger.info(f"MonitorProcess: Accept 按钮已点击: {info}")
+            last_action_time = time.time()
     
     logger.info("MonitorProcess: Safety timeout reached.")
 
@@ -686,64 +833,8 @@ def full_workflow(
     logger.info("提交...")
     pyautogui.press('return')
     
-    # 5. 检测 Replying 状态
-    logger.info("等待 Replying 出现...")
-    appeared = False
-    start_time = time.time()
-    
-    while time.time() - start_time < 10:
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if found:
-            logger.info("检测到 Replying!")
-            appeared = True
-            break
-        time.sleep(0.5)
-    
-    if not appeared:
-        logger.info("Replying 未出现，任务可能已完成")
-        return
-    
-    # 6. 监控循环
-    last_action_time = time.time()
-    not_found_count = 0
-    max_not_found = 5
-    timeout = 300
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        # 检查 MCP 是否已经发送了回复
-        if reply_event and reply_event.is_set():
-            logger.info("full_workflow: reply_event set, IDE 已回复，停止监控")
-            return
-        
-        time.sleep(1)
-        
-        # 检查 Replying 是否还在
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if not found:
-            not_found_count += 1
-            logger.info(f"Replying 未找到 ({not_found_count}/{max_not_found})")
-            if not_found_count >= max_not_found:
-                logger.info("Replying 消失，任务完成")
-                return
-            continue
-        
-        not_found_count = 0
-        
-        # 每5秒执行一次
-        if time.time() - last_action_time >= 5:
-            # 1) 发送 "思考中..." 状态
-            logger.info("发送状态: 思考中...")
-            send_status("思考中...")
-            
-            # 2) 点击 Accept 按钮
-            success, info = click_accept_button(templates_dir)
-            if success:
-                logger.info(f"Accept 按钮已点击: {info}")
-            
-            last_action_time = time.time()
-    
-    logger.info("监控超时")
+    # 5. 监控循环
+    monitor_process(templates_dir, send_status, reply_event)
 
 
 def full_workflow_image(
@@ -776,15 +867,7 @@ def full_workflow_image(
             paste_and_submit()
             
             # 4. Monitor Process
-            replying_img = os.path.join(templates_dir, "Replying.png")
-            accept_img = os.path.join(templates_dir, "accept_button.png")
-            
-            monitor_process(
-                replying_img,
-                accept_img,
-                on_thinking=lambda: send_status("Thinking..."),
-                confidence=confidence
-            )
+            monitor_process(templates_dir, send_status, reply_event=None)
         else:
             logger.error("Could not find input_box.png")
             send_status(f"Error [v3]: input_box.png (img flow) not found. Info: {debug_log}")
@@ -931,61 +1014,5 @@ def full_workflow_media_group(
     logger.info("提交...")
     pyautogui.press('return')
     
-    # 6. 检测 Replying 状态
-    logger.info("等待 Replying 出现...")
-    appeared = False
-    start_time = time.time()
-    
-    while time.time() - start_time < 10:
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if found:
-            logger.info("检测到 Replying!")
-            appeared = True
-            break
-        time.sleep(0.5)
-    
-    if not appeared:
-        logger.info("Replying 未出现，任务可能已完成")
-        return
-    
-    # 7. 监控循环
-    last_action_time = time.time()
-    not_found_count = 0
-    max_not_found = 5
-    timeout = 300
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        # 检查 MCP 是否已经发送了回复
-        if reply_event and reply_event.is_set():
-            logger.info("full_workflow_media_group: reply_event set, IDE 已回复，停止监控")
-            return
-        
-        time.sleep(1)
-        
-        # 检查 Replying 是否还在
-        found, _ = find_replying(templates_dir)  # 使用默认 confidence=0.9
-        if not found:
-            not_found_count += 1
-            logger.info(f"Replying 未找到 ({not_found_count}/{max_not_found})")
-            if not_found_count >= max_not_found:
-                logger.info("Replying 消失，任务完成")
-                return
-            continue
-        
-        not_found_count = 0
-        
-        # 每5秒执行一次
-        if time.time() - last_action_time >= 5:
-            # 1) 发送 "思考中..." 状态
-            logger.info("发送状态: 思考中...")
-            send_status("思考中...")
-            
-            # 2) 点击 Accept 按钮
-            success, info = click_accept_button(templates_dir)
-            if success:
-                logger.info(f"Accept 按钮已点击: {info}")
-            
-            last_action_time = time.time()
-    
-    logger.info("监控超时")
+    # 6. 监控循环
+    monitor_process(templates_dir, send_status, reply_event)
