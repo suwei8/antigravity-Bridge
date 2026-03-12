@@ -564,7 +564,7 @@ def monitor_process(
     This function:
     1. Waits for "Replying" indicator to appear
     2. Monitors the process, clicking "Accept" button when it appears
-    3. Sends "Thinking..." status periodically
+    3. Sends "思考中..." status periodically
     4. Exits when "Replying" indicator disappears
     
     Args:
@@ -646,13 +646,13 @@ def monitor_process(
                     return True
             continue
         
-        # Replying 确认可见，重置计数器
+        # Reset counter as we found it (if we reach here, replying_img is theoretically still present or inside the 5-error buffer)
         not_found_count = 0
         
-        # 只有在 Replying 确认可见的情况下，且距上次发送已满 8 秒，才发送 Thinking
+        # 原汁原味的旧版逻辑：不严格拘泥于刚才当前帧是否检测到 Replying 可见，只要未超时退出，就每8秒触发一次
         if time.time() - last_thinking_time >= 8:
             if on_thinking:
-                logger.info("MonitorProcess: Replying 可见且已过 8 秒，发送 'Thinking...'")
+                logger.info("发送状态: 思考中...")  # 并且把 log 恢复成之前的中文
                 on_thinking()
             last_thinking_time = time.time()
         
@@ -828,7 +828,7 @@ def full_workflow(
         replying_img,
         accept_img,
         templates_dir,
-        on_thinking=lambda: send_status("Thinking..."),
+        on_thinking=lambda: send_status("思考中..."),
         on_switched=lambda: send_status("模型已切换！"),
         confidence=confidence
     )
@@ -871,7 +871,7 @@ def full_workflow_image(
                 replying_img,
                 accept_img,
                 templates_dir,
-                on_thinking=lambda: send_status("Thinking..."),
+                on_thinking=lambda: send_status("思考中..."),
                 on_switched=lambda: send_status("模型已切换！"),
                 confidence=confidence
             )
@@ -1025,7 +1025,7 @@ def full_workflow_media_group(
         replying_img,
         accept_img,
         templates_dir,
-        on_thinking=lambda: send_status("Thinking..."),
+        on_thinking=lambda: send_status("思考中..."),
         on_switched=lambda: send_status("模型已切换！"),
         confidence=confidence
     )
