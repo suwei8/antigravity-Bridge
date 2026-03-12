@@ -704,30 +704,45 @@ def handle_model_switch(templates_dir: str, confidence: float = 0.8) -> bool:
         logger.warning(f"handle_model_switch: xdotool click failed: {e}. Falling back to pyautogui double click.")
         pyautogui.click(click_x, click_y, clicks=2, interval=0.2)
     
-    time.sleep(1) # 等待弹窗完全消失
+    logger.info("handle_model_switch: 等待 Upgrade 弹窗消失并恢复焦点... (3秒)")
+    time.sleep(3) # 等待弹窗完全消失且网页可点击
     
     # 2 & 3. 查找当前模型并切换
     panel_claude = os.path.join(templates_dir, "panel-ClaudeOpus.png")
     panel_gemini = os.path.join(templates_dir, "panel-Gemini.png")
     
     target_model_img = None
+    success = False
     
-    # 尝试找 Claude
-    success, _ = find_and_click(panel_claude, confidence)
-    if success:
-        logger.info("handle_model_switch: 当前是 Claude，准备切换到 Gemini")
-        target_model_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
-    else:
-        # 尝试找 Gemini
-        success, _ = find_and_click(panel_gemini, confidence)
+    # 给予最多 3 次尝试来寻找面板（应对动画延迟）
+    for attempt in range(1, 4):
+        logger.info(f"handle_model_switch: 第 {attempt} 次尝试寻找模型选择面板...")
+        # 尝试找 Claude
+        success, _ = find_and_click(panel_claude, confidence)
         if success:
-            logger.info("handle_model_switch: 当前是 Gemini，准备切换到 Claude")
-            target_model_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
+            logger.info("handle_model_switch: 当前是 Claude，准备切换到 Gemini")
+            target_model_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
+            break
         else:
-            logger.error("handle_model_switch: 无法在界面上找到当前模型标识 (panel-ClaudeOpus.png / panel-Gemini.png)")
-            return False
+            # 尝试找 Gemini
+            success, _ = find_and_click(panel_gemini, confidence)
+            if success:
+                logger.info("handle_model_switch: 当前是 Gemini，准备切换到 Claude")
+                target_model_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
+                break
+        
+        logger.warning(f"handle_model_switch: 尝试 {attempt} 未找到模型面板，等待 2 秒后重试...")
+        time.sleep(2)
+
+    if not success:
+        logger.error("handle_model_switch: 重试 3 次后仍无法在界面上找到当前模型标识 (panel-ClaudeOpus.png / panel-Gemini.png)，甚至截取当前屏幕用于排查。")
+        error_screenshot = os.path.join(templates_dir, "error_model_not_found.png")
+        pyautogui.screenshot(error_screenshot)
+        logger.info(f"handle_model_switch: 错误截图已保存: {error_screenshot}")
+        return False
             
-    time.sleep(1) # 等待下拉列表展开
+    logger.info("handle_model_switch: 成功点击当前模型面板，等待下拉列表展开... (2秒)")
+    time.sleep(2)
     
     # 点击目标模型
     success, _ = find_and_click(target_model_img, confidence)
