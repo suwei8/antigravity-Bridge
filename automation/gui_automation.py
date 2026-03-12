@@ -611,7 +611,9 @@ def monitor_process(
                 logger.info("MonitorProcess: 'Replying' gone. Checking for Upgrade dialog...")
                 # 检查是否因为配额耗尽弹出了 Upgrade 对话框
                 upgrade_img = os.path.join(templates_dir, "Upgrade.png")
-                if find_image(upgrade_img, confidence=0.8):
+                upgrade2_img = os.path.join(templates_dir, "Upgrade2.png")
+                
+                if find_image(upgrade_img, confidence=0.8) or find_image(upgrade2_img, confidence=0.8):
                     logger.warning("MonitorProcess: 'Upgrade' dialog detected! Quota exhausted.")
                     if handle_model_switch(templates_dir, confidence=0.8):
                         logger.info("MonitorProcess: Model switched and continued successfully. Restarting monitor loop.")
