@@ -69,10 +69,21 @@ check_dependencies() {
 }
 
 setup_env() {
-    # 获取当前 DISPLAY，优先从进程中或 w 命令检测，默认为 :0
-    local detected_display=$(w | grep -o ':[0-9]\+\.[0-9]\+' | head -1)
+    # 优先使用当前环境变量中的 DISPLAY 如果它非空的话
+    local detected_display="$DISPLAY"
+    
+    # 如果为空，则尝试从X11 socket寻找属于当前用户的显示器
     if [ -z "$detected_display" ]; then
-        detected_display=$(w | grep -o ':[0-9]\+' | head -1)
+        local user_uid=$(id -u)
+        local x_socket=$(find /tmp/.X11-unix/ -maxdepth 1 -name 'X*' -user "$user_uid" 2>/dev/null | head -n 1 | sed 's|.*/X||')
+        if [ -n "$x_socket" ]; then
+            detected_display=":$x_socket"
+        else
+            detected_display=$(w | grep -o ':[0-9]\+\.[0-9]\+' | head -1)
+            if [ -z "$detected_display" ]; then
+                detected_display=$(w | grep -o ':[0-9]\+' | head -1)
+            fi
+        fi
     fi
     export DISPLAY="${detected_display:-:0}"
     export XAUTHORITY="$HOME/.Xauthority"
