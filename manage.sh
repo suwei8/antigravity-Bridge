@@ -190,25 +190,34 @@ update() {
     
     if [ -z "$latest_tag" ]; then
         error "无法获取最新版本号，将直接尝试下载 latest。"
+        local specific_url="$DOWNLOAD_URL"
     else
         info "发现最新版本: ${GREEN}${latest_tag}${NC}"
+        # 使用明确的 tag url，防止部分环境重定向出错
+        local specific_url="https://github.com/${REPO}/releases/download/${latest_tag}/${APP_NAME}"
     fi
 
     info "正在下载最新版本..."
     local tmp_file="${APP_NAME}.tmp"
-    if curl -L -o "$tmp_file" "$DOWNLOAD_URL"; then
-        chmod +x "$tmp_file"
-        
-        info "正在停止当前服务..."
-        stop
-        
-        info "替换可执行文件..."
-        mv -f "$tmp_file" "$APP_NAME"
-        
-        info "更新成功 (${latest_tag:-latest})，正在启动服务..."
-        start
+    if curl -L -o "$tmp_file" "$specific_url"; then
+        # 增加文件类型的校验，防止因为网络拦截下载成了 HTML 错误页面
+        if file "$tmp_file" | grep -qi "ELF"; then
+            chmod +x "$tmp_file"
+            
+            info "正在停止当前服务..."
+            stop
+            
+            info "替换可执行文件..."
+            mv -f "$tmp_file" "$APP_NAME"
+            
+            info "更新成功 (${latest_tag:-latest})，正在启动服务..."
+            start
+        else
+            error "下载的文件验证失败。内容不是可执行二进制文件，可能是网络阻断导致了 HTML 返回。"
+            rm -f "$tmp_file"
+        fi
     else
-        error "下载失败，请检查网络。"
+        error "下载请求失败，请检查网络。"
         rm -f "$tmp_file"
     fi
 }
