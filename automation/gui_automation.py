@@ -554,7 +554,8 @@ def monitor_process(
     accept_img: str,
     on_thinking: Optional[Callable[[], None]] = None,
     confidence: float = 0.8,
-    accept_confidence: float = 0.6
+    accept_confidence: float = 0.6,
+    reply_event=None
 ):
     """
     Monitor the reply process and interact as needed.
@@ -563,7 +564,7 @@ def monitor_process(
     1. Waits for "Replying" indicator to appear
     2. Monitors the process, clicking "Accept" button when it appears
     3. Sends "Thinking..." status periodically
-    4. Exits when "Replying" indicator disappears
+    4. Exits when "Replying" indicator disappears or reply_event is set
     
     Args:
         replying_img: Path to "Replying" indicator template
@@ -571,6 +572,7 @@ def monitor_process(
         on_thinking: Callback to invoke when sending thinking status
         confidence: Image matching confidence threshold for replying indicator
         accept_confidence: Confidence threshold for accept button (default 0.6)
+        reply_event: threading.Event, set when MCP reply is sent (stops thinking)
     """
     logger.info("MonitorProcess: Starting loop...")
     
@@ -598,6 +600,11 @@ def monitor_process(
     start_time = time.time()
     
     while time.time() - start_time < timeout:
+        # Check if MCP has already sent a reply
+        if reply_event and reply_event.is_set():
+            logger.info("MonitorProcess: reply_event set, IDE has replied. Stopping.")
+            return
+        
         time.sleep(1)
         
         # Check if Replying indicator is still present
@@ -632,7 +639,8 @@ def full_workflow(
     text: str,
     templates_dir: str,
     send_status: Callable[[str], None],
-    confidence: float = 0.8
+    confidence: float = 0.8,
+    reply_event=None
 ):
     """
     执行完整的文字消息工作流:
@@ -646,12 +654,14 @@ def full_workflow(
     6. 如果找到 Replying，每5秒:
        - 发送 "思考中..." 状态
        - click_accept_button() 点击 Accept 按钮
+    7. 当 reply_event 被 set 时立即停止
     
     Args:
         text: 要发送的文本内容
         templates_dir: 模板目录路径
         send_status: 发送状态消息的回调函数
         confidence: 图像匹配置信度
+        reply_event: threading.Event, MCP 回复后 set, 停止思考中
     """
     # 1. 复制文本到剪贴板
     if not set_clipboard(text):
@@ -701,6 +711,11 @@ def full_workflow(
     start_time = time.time()
     
     while time.time() - start_time < timeout:
+        # 检查 MCP 是否已经发送了回复
+        if reply_event and reply_event.is_set():
+            logger.info("full_workflow: reply_event set, IDE 已回复，停止监控")
+            return
+        
         time.sleep(1)
         
         # 检查 Replying 是否还在
@@ -791,7 +806,8 @@ def full_workflow_media_group(
     templates_dir: str,
     send_status: Callable[[str], None],
     confidence: float = 0.8,
-    file_paths: List[str] = None
+    file_paths: List[str] = None,
+    reply_event=None
 ):
     """
     执行完整的多图+文字+文件消息工作流:
@@ -813,6 +829,7 @@ def full_workflow_media_group(
     8. 如果找到 Replying，每5秒:
        - 发送 "思考中..." 状态
        - click_accept_button() 点击 Accept 按钮
+    9. 当 reply_event 被 set 时立即停止
     
     Args:
         image_paths: 图片路径列表
@@ -821,6 +838,7 @@ def full_workflow_media_group(
         send_status: 发送状态消息的回调函数
         confidence: 图像匹配置信度
         file_paths: 非图片文件路径列表
+        reply_event: threading.Event, MCP 回复后 set, 停止思考中
     """
     if file_paths is None:
         file_paths = []
@@ -938,6 +956,11 @@ def full_workflow_media_group(
     start_time = time.time()
     
     while time.time() - start_time < timeout:
+        # 检查 MCP 是否已经发送了回复
+        if reply_event and reply_event.is_set():
+            logger.info("full_workflow_media_group: reply_event set, IDE 已回复，停止监控")
+            return
+        
         time.sleep(1)
         
         # 检查 Replying 是否还在

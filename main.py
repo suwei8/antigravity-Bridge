@@ -288,19 +288,26 @@ class AntigravityBridge:
                     except Exception as e:
                         logger.error(f"Error sending status: {e}")
                 
+                # Create reply_event to stop "思考中..." when MCP sends reply
+                reply_event = None
+                if self.mcp_server:
+                    reply_event = self.mcp_server.create_reply_event()
+                
                 if image_paths or file_paths:
                     full_workflow_media_group(
                         image_paths,
                         content_with_context,
                         self.templates_dir,
                         send_status,
-                        file_paths=file_paths  # 传递非图片文件路径
+                        file_paths=file_paths,
+                        reply_event=reply_event,
                     )
                 else:
                     full_workflow(
                         content_with_context,
                         self.templates_dir,
-                        send_status
+                        send_status,
+                        reply_event=reply_event,
                     )
             finally:
                 # Cleanup downloaded files

@@ -46,6 +46,9 @@ class MCPServer:
         self._output_lock = threading.Lock()
         # Use provided stdout or fall back to sys.stdout
         self._stdout = stdout_stream if stdout_stream is not None else sys.stdout
+        # Reply event: set when reply_to_telegram succeeds, used to stop "思考中..." loop
+        self._reply_event: Optional[threading.Event] = None
+        self._reply_event_lock = threading.Lock()
     
     def set_last_chat_id(self, chat_id: str):
         """设置最后收到消息的 chat_id，写入文件供其他进程读取。"""
@@ -65,6 +68,12 @@ class MCPServer:
         except Exception as e:
             logger.error(f"MCP: Error reading last_chat_id: {e}")
         return None
+    
+    def create_reply_event(self) -> threading.Event:
+        """创建新的 reply_event，供监控循环使用。当 MCP 发送回复后会 set() 此 event。"""
+        with self._reply_event_lock:
+            self._reply_event = threading.Event()
+            return self._reply_event
     
     def start(self):
         """
@@ -186,6 +195,11 @@ class MCPServer:
                                 'message': f'Telegram Error: {error}',
                             }
                         else:
+                            # Signal monitoring loop to stop sending "思考中..."
+                            with self._reply_event_lock:
+                                if self._reply_event:
+                                    self._reply_event.set()
+                                    logger.info("MCP: reply_event set, stopping thinking heartbeat")
                             response['result'] = {
                                 'content': [
                                     {
