@@ -549,99 +549,99 @@ def paste_and_submit():
     pyautogui.press('return')
 
 
-switch_history = []
-
-def handle_model_switch(templates_dir: str, send_status: Optional[Callable[[str], None]]) -> str:
+def handle_model_switch(templates_dir: str, reply_event=None) -> str:
     """
-    检查模型配额耗尽并自动切换模型。
+    检查模型配额耗尽并自动尝试切换模型（执行一次 continue）。
     返回状态:
     - "NOT_FOUND": 未发现 Upgrade 弹窗
-    - "SWITCHED": 成功切换了模型并输入了 continue
-    - "LIMIT_REACHED": 短时间内切换达到上限，已发送停止通知
+    - "SWITCHED": 成功点击了备用模型并输入了 continue
     """
-    global switch_history
     
-    current_time = time.time()
-    # 清理过期记录 (20秒之前的)
-    switch_history = [t for t in switch_history if current_time - t <= 20]
-    
-    # 1. 检查 Upgrade 图像
+    # 1. 检查 Upgrade 图像 (对应步骤 A)
+    # 严格限制 confidence 避免在空闲状态时全屏匹配到假阳性 (False Positives)
+    # 将置信度设定为 [0.95, 0.90, 0.85] 平衡匹配率，防止太高匹配不到，太低全屏误触
     upgrade_found = False
     for template in ["Upgrade.png", "Upgrade2.png"]:
-        if find_image(os.path.join(templates_dir, template), confidence=0.8):
+        res = smart_find_image(os.path.join(templates_dir, template), confidence_levels=[0.95, 0.90, 0.85])
+        if res.get('found'):
             upgrade_found = True
+            logger.info(f"升级弹窗识别成功: {template}, confidence: {res.get('confidence')}")
             break
             
     if not upgrade_found:
         return "NOT_FOUND"
         
-    logger.info("检测到 Upgrade 弹窗，开始处理模型切换逻辑")
+    logger.info("检测到 Upgrade 弹窗，开始处理单次模型切换")
     
-    # 检查是否 20 秒内执行过 2 次
-    if len(switch_history) >= 2:
-        logger.warning("20秒内已执行过2次 continue，模型仍然耗尽，发送通知并停止。")
-        if send_status:
-            send_status("账号配额已用尽，请手动切换账号")
-        return "LIMIT_REACHED"
-        
-    # 2. 查找 Dismiss.png 并关闭
-    dismiss_path = os.path.join(templates_dir, "Dismiss.png")
-    success, _ = find_and_click(dismiss_path, confidence=0.8)
-    if success:
-        logger.info("已点击 Dismiss.png 关闭弹窗")
-        time.sleep(0.5)
-    else:
-        logger.warning("未找到 Dismiss.png，继续尝试后面的步骤")
-        
-    # 3. 查找 模型选择面板
+    # 2. 不再点击 Dismiss，直接查找模型选择面板并点击备用模型 (对应步骤 B)
     panel_opus = os.path.join(templates_dir, "panel-ClaudeOpus.png")
     panel_gemini = os.path.join(templates_dir, "panel-Gemini.png")
     
     found_panel = None
-    if find_and_click(panel_opus, confidence=0.8)[0]:
-        found_panel = "opus"
-    elif find_and_click(panel_gemini, confidence=0.8)[0]:
-        found_panel = "gemini"
+    for conf in [0.85, 0.8, 0.75, 0.7, 0.65, 0.6]:
+        if find_image(panel_opus, confidence=conf):
+            found_panel = "opus"
+            logger.info(f"找到 Claude 面板, confidence={conf}")
+            break
+        elif find_image(panel_gemini, confidence=conf):
+            found_panel = "gemini"
+            logger.info(f"找到 Gemini 面板, confidence={conf}")
+            break
         
     if not found_panel:
-        logger.warning("未找到相应的模型选择面板")
+        logger.warning("未找到当前应用的模型面板（所有置信度均未命中），无法确认切向哪个模型")
         return "NOT_FOUND"
         
-    time.sleep(2)
-    
-    # 4. 根据当前面板选择备用模型
+    # 根据当前面板选择备用模型并点击
+    target_img = ""
+    switched_to = ""
     if found_panel == "opus":
         target_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
-        if find_and_click(target_img, confidence=0.8)[0]:
-            logger.info("成功点击 Gemini3.1Pro-High.png")
-        else:
-            logger.warning("未找到 Gemini3.1Pro-High.png")
+        switched_to = "Gemini 3.1 Pro"
+        # 展开面板
+        find_and_click(panel_opus, confidence=0.8)
     else:
         target_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
-        if find_and_click(target_img, confidence=0.8)[0]:
-            logger.info("成功点击 Claude-Opus-4.6-Thinking.png")
-        else:
-            logger.warning("未找到 Claude-Opus-4.6-Thinking.png")
+        switched_to = "Claude Opus 4.6"
+        # 展开面板
+        find_and_click(panel_gemini, confidence=0.8)
+        
+    time.sleep(1) # 给予下拉菜单展开的时间
+        
+    # 尝试更低的 confidence 以适应界面微小变化
+    success = False
+    for conf in [0.8, 0.7, 0.6, 0.5]:
+        if find_and_click(target_img, confidence=conf)[0]:
+            success = True
+            break
             
-    time.sleep(0.5)
+    if success:
+        logger.info(f"成功点击备用模型: {os.path.basename(target_img)}")
+    else:
+        logger.warning(f"备用模型点击失败: {os.path.basename(target_img)}")
+        pyautogui.click(100, 100)
+        return "NOT_FOUND"
+            
+    time.sleep(1) # 给予界面切换模型的加载时间
+
+    # 3. 输入 continue + 回车 (对应步骤 C)
+    # Check if we should even send "continue" by consulting reply_event if provided
+    # Note: adding reply_event to handle_model_switch signature
     
-    # 5. 输入 continue + 回车
     success, debug = click_input_box(templates_dir)
     if success:
         time.sleep(0.3)
-        pyautogui.typewrite("continue")
+        set_clipboard("continue")
+        time.sleep(0.2)
+        pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.3)
         pyautogui.press('return')
         logger.info("已提交 continue")
-        
-        # 记录本次执行时间
-        switch_history.append(time.time())
-        return "SWITCHED"
+        return f"SWITCHED:{switched_to}"
     else:
         logger.warning(f"无法点击输入框发送 continue: {debug}")
-        # 如果找不到输入框也记录一次，防止死循环
-        switch_history.append(time.time())
-        return "SWITCHED"
+        # 如果连输入框都找不到，说明界面异常，也视作失败
+        return "NOT_FOUND"
 
 
 def monitor_process(
@@ -652,134 +652,144 @@ def monitor_process(
     """
     Monitor the reply process and interact as needed.
     """
-    global switch_history
     logger.info("MonitorProcess: Starting loop...")
-    did_switch = False  # 标记是否刚执行过模型切换
     
+    # ---------- 第一阶段：首屏等待与即时配额拦截检测 ----------
     logger.info("MonitorProcess: Waiting for 'Replying' to appear...")
     appeared = False
     start_time = time.time()
     
-    while time.time() - start_time < 10:
-        # 检查 MCP 是否已经回复
+    # 给最多 5 秒寻找 Replying
+    while time.time() - start_time < 5:
         if reply_event and reply_event.is_set():
             logger.info("MonitorProcess: reply_event set during wait phase. Stopping.")
             return
+            
         found, _ = find_replying(templates_dir)
         if found:
-            logger.info("MonitorProcess: 'Replying' detected! Entering monitor loop.")
+            logger.info("MonitorProcess: 'Replying' detected! Entering continuous monitor loop.")
             appeared = True
             break
+            
+        # 若没找到 Replying，则在等待期间同步扫一眼是否立刻弹了 Upgrade 弹窗 (步骤 A/B/C/D)
+        # Passing reply_event to ensure we don't switch models if we already replied
+        if reply_event and reply_event.is_set():
+            logger.info("MonitorProcess: reply_event is set. Aborting model switch check.")
+            return
+
+        switch_status = handle_model_switch(templates_dir, reply_event)
+        if switch_status and switch_status.startswith("SWITCHED"):
+            logger.info("MonitorProcess: 发现了 Upgrade 并成功切换模型 + 发送 continue. (步骤 C)")
+            # 步骤 D: 延迟 2 秒给界面反应时间
+            time.sleep(2)
+            
+            # 步骤 E: 再次检测 Replying 是否可见
+            logger.info("MonitorProcess: 查验切换后的模型是否开始工作...")
+            re_appeared = False
+            check_start = time.time()
+            # 给新模型 10 秒时间弹出 Replying
+            while time.time() - check_start < 10:
+                if reply_event and reply_event.is_set():
+                    logger.info("MonitorProcess: reply_event set after switch. Stopping.")
+                    return
+                if find_replying(templates_dir)[0]:
+                    logger.info("MonitorProcess: 切换完成，被切换的模型具有配额并已开始 Replying！")
+                    re_appeared = True
+                    break
+                time.sleep(0.5)
+                
+            if re_appeared:
+                appeared = True
+                break # 跳出第一阶段等待，进入第二阶段持续监控
+            else:
+                # 切换后仍不见 Replying -> 两个模型配额均耗尽
+                logger.warning("MonitorProcess: 切换后迟迟未见 Replying，判定账号下两个模型均配额用尽。")
+                if send_status:
+                    send_status("账号配额已用尽，请手动切换账号")
+                return
+                
         time.sleep(0.5)
     
     if not appeared:
-        # 如果 Replying 没出现，检查是否刚刚执行过切换
-        # 如果 20 秒内已有 2+ 次切换记录，说明两个模型都用尽了
-        current_time = time.time()
-        recent_switches = [t for t in switch_history if current_time - t <= 20]
-        if len(recent_switches) >= 2:
-            logger.warning("MonitorProcess: Replying 未出现且 20 秒内已切换 2 次，发送配额用尽通知")
-            if send_status:
-                send_status("账号配额已用尽，请手动切换账号")
-            return
-            
-        # Replying 没出现，也可能是直接弹出了 Upgrade 弹窗！
-        logger.info("MonitorProcess: 'Replying' never appeared. Checking for Upgrade dialog...")
-        switch_status = handle_model_switch(templates_dir, send_status)
-        if switch_status == "LIMIT_REACHED":
-            logger.info("MonitorProcess: 达到切换上限，退出！")
-            return
-        elif switch_status == "SWITCHED":
-            logger.info("MonitorProcess: 在初始等待中发现 Upgrade 弹窗并成功切换。进入常规监控...")
-            appeared = True
-            # 直接进入下面的常规监控循环，等待新的 Replying
-        else:
-            logger.info("MonitorProcess: 'Replying' never appeared and no Upgrade dialog found. Assuming finished or missed.")
-            return
+        logger.warning("MonitorProcess: 首屏等待超时(5s)未见 Replying，也未见 Upgrade 弹窗，可能网络极慢或遇到不可知错误，退出监控。")
+        return
     
+    # ---------- 第二阶段：日常回复期间的持续监控 ----------
     last_action_time = time.time()
+    heartbeat_start_time = time.time()  # 心跳计时起点，用于计算累计时间
     not_found_count = 0
-    max_not_found = 3  # Based on user requirement: 3 seconds
+    max_not_found = 3  # Based on user requirement: 3 * 1s intervals
     timeout = 300
-    start_time = time.time()
+    monitor_start = time.time()
     
-    while time.time() - start_time < timeout:
+    while time.time() - monitor_start < timeout:
         if reply_event and reply_event.is_set():
             logger.info("MonitorProcess: reply_event set, IDE has replied. Stopping.")
             return
         
         time.sleep(1)
         
+        # 持续找 Replying
         found, _ = find_replying(templates_dir)
         if not found:
             not_found_count += 1
             logger.info(f"MonitorProcess: 'Replying' not found ({not_found_count}/{max_not_found})")
             
             if not_found_count >= max_not_found:
-                switch_status = handle_model_switch(templates_dir, send_status)
-                if switch_status == "LIMIT_REACHED":
-                    logger.info("MonitorProcess: 达到切换上限，退出！")
+                # 消失超过 3 秒 -> 期间有可能突然弹出 Upgrade（中途断气）
+                if reply_event and reply_event.is_set():
+                    logger.info("MonitorProcess: reply_event is set mid-flight. Stopping loop naturally.")
                     return
-                elif switch_status == "SWITCHED":
-                    logger.info("MonitorProcess: 已尝试切换模型，重新等待 Replying...")
-                    not_found_count = 0
-                    # 切换后等待 8 秒看 Replying 是否重新出现
-                    time.sleep(2)
+
+                switch_status = handle_model_switch(templates_dir, reply_event)
+                if switch_status and switch_status.startswith("SWITCHED"):
+                    logger.info("MonitorProcess: 回复途中配额耗尽，已切换模型 + 发送 continue.")
+                    time.sleep(2) # 步骤 D 延迟
+                    
+                    # 步骤 E 验证
+                    check_start = time.time()
                     re_appeared = False
-                    wait_start = time.time()
-                    while time.time() - wait_start < 8:
+                    while time.time() - check_start < 10:
                         if reply_event and reply_event.is_set():
-                            logger.info("MonitorProcess: reply_event set after switch. Stopping.")
+                            logger.info("MonitorProcess: reply_event set after mid-switch. Stopping.")
                             return
-                        f, _ = find_replying(templates_dir)
-                        if f:
-                            logger.info("MonitorProcess: Replying 重新出现！继续监控")
+                        if find_replying(templates_dir)[0]:
+                            logger.info("MonitorProcess: 回复途中切换完成，新模型生效中。")
                             re_appeared = True
                             break
                         time.sleep(0.5)
-                    
-                    if not re_appeared:
-                        # Replying 没重新出现，检查是否已经切换了 2 次
-                        current_time = time.time()
-                        recent = [t for t in switch_history if current_time - t <= 20]
-                        if len(recent) >= 2:
-                            logger.warning("MonitorProcess: 切换后 Replying 仍未出现，且已切换 2 次，发送配额用尽通知")
-                            if send_status:
-                                send_status("账号配额已用尽，请手动切换账号")
-                            return
-                        else:
-                            logger.info("MonitorProcess: 切换后 Replying 未出现，但切换次数未达上限，继续监控")
-                    
-                    # 重置计时器继续监控
-                    start_time = time.time()
-                    last_action_time = time.time()
-                    continue
-                else:
-                    # NOT_FOUND: 没有 Upgrade 弹窗
-                    # 检查是否最近执行过切换但模型仍然不工作
-                    current_time = time.time()
-                    recent = [t for t in switch_history if current_time - t <= 20]
-                    if len(recent) >= 2:
-                        logger.warning("MonitorProcess: Replying 消失，无 Upgrade 弹窗但 20s 内已切换 2 次，发送配额用尽通知")
+                        
+                    if re_appeared:
+                        monitor_start = time.time() # 刷新超时
+                        last_action_time = time.time()
+                        continue # 继续第二阶段
+                    else:
+                        logger.warning("MonitorProcess: 回复途中切换后未见新 Replying，判定两个模型均已耗尽。")
                         if send_status:
                             send_status("账号配额已用尽，请手动切换账号")
                         return
-                    logger.info("MonitorProcess: 'Replying' gone and no Upgrade dialog. Stopping loop.")
-                    return
+                
+                # 若 Replying 消失，且并非 Upgrade 耗尽，判定为自然结束或非预期消失
+                logger.info("MonitorProcess: 'Replying' gone naturally. Stopping loop.")
+                return
             continue
         
+        # 如果找到了 Replying，复位倒数
         not_found_count = 0
         
-        if time.time() - last_action_time >= 5:
+        # 兜底发点击 Accept 的动作心跳（每 10 秒一次）
+        if time.time() - last_action_time >= 10:
             if send_status:
-                logger.info("MonitorProcess: Sending 'Thinking...'")
-                send_status("思考中...")
+                current_time = time.strftime("%H:%M:%S", time.localtime())
+                logger.info(f"MonitorProcess: Sending heartbeat ({current_time})")
+                send_status(f"思考中...({current_time})")
             success, info = click_accept_button(templates_dir)
             if success:
                 logger.info(f"MonitorProcess: Accept 按钮已点击: {info}")
             last_action_time = time.time()
+            heartbeat_start_time = time.time()  # 重置心跳计时
     
-    logger.info("MonitorProcess: Safety timeout reached.")
+
 
 
 def full_workflow(

@@ -24,7 +24,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
 from telegram import Bot, Message, Update
 from telegram.ext import (
     CallbackContext,
@@ -38,6 +41,8 @@ from automation.gui_automation import (
     full_workflow,
     full_workflow_media_group,
     find_and_click,
+    find_replying,
+    handle_model_switch,
 )
 from mcp.server import MCPServer
 
@@ -65,9 +70,6 @@ class MessageBuffer:
 class AntigravityBridge:
     """Main application class for Antigravity-Bridge."""
     
-    # 硬编码允许的 Chat ID 列表（自用项目，无需配置）
-    ALLOWED_CHAT_IDS = [1118793113, 8415850251]
-    
     def __init__(self):
         self.buffer_map: Dict[int, MessageBuffer] = defaultdict(MessageBuffer)
         self.buffer_lock = threading.Lock()
@@ -75,16 +77,27 @@ class AntigravityBridge:
         self.templates_dir: str = ""
         self._retry_monitor_running = False
         self.mcp_server: Optional[MCPServer] = None  # MCP Server 引用，用于设置 last_chat_id
+        self.ALLOWED_CHAT_IDS: list = []  # 从 .env 读取
         
     def setup(self) -> bool:
         """Initialize the application."""
-        # Load .env file
-        load_dotenv()
+        # 优先从环境变量读取（MCP mcp_config.json 会自动注入）
+        # 如果环境变量不存在，才尝试从 .env 文件加载（兼容 daemon 模式）
+        if not os.getenv('TELEGRAM_BOT_TOKEN') and load_dotenv:
+            load_dotenv()
         
         token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not token:
             logger.error("TELEGRAM_BOT_TOKEN not set")
             return False
+        
+        # 从环境变量读取 TELEGRAM_CHAT_ID，支持逗号分隔多个 ID
+        chat_id_str = os.getenv('TELEGRAM_CHAT_ID', '')
+        if chat_id_str:
+            self.ALLOWED_CHAT_IDS = [int(cid.strip()) for cid in chat_id_str.split(',') if cid.strip()]
+            logger.info(f"Allowed chat IDs: {self.ALLOWED_CHAT_IDS}")
+        else:
+            logger.warning("TELEGRAM_CHAT_ID not set, no chat IDs allowed")
         
         # Determine templates directory
         # PyInstaller: sys._MEIPASS | Dev: script_dir
@@ -368,6 +381,88 @@ class AntigravityBridge:
         
         logger.info("Retry monitor stopped")
     
+    def _upgrade_monitor(self):
+        """
+        后台监控 Upgrade/Enable Overages 弹窗并自动执行模型切换。
+        
+        这是用户设计的步骤 A：持续在屏幕上查找配额用尽弹窗。
+        每 30 秒执行一次检查，以节省系统资源。
+        发现弹窗后执行完整的 B/C/D/E 切换流程。
+        """
+        logger.info("Upgrade monitor started. Checking every 5s for quota popups (TEST MODE).")
+        
+        while self._upgrade_monitor_running:
+            try:
+                # 步骤 A: 检查 Upgrade 弹窗
+                switch_status = handle_model_switch(self.templates_dir)
+                
+                if switch_status and switch_status.startswith("SWITCHED"):
+                    # 解析切换到的模型名称
+                    switched_to = switch_status.split(":", 1)[1] if ":" in switch_status else "未知模型"
+                    logger.info(f"UpgradeMonitor: 检测到配额弹窗并成功切换模型至 {switched_to} + 发送 continue (步骤 B/C)")
+                    
+                    # 发送 TG 通知：模型已切换（发给最后一个对话的用户）
+                    try:
+                        notify_chat_id = None
+                        if self.mcp_server and hasattr(self.mcp_server, 'last_chat_id') and self.mcp_server.last_chat_id:
+                            notify_chat_id = int(self.mcp_server.last_chat_id)
+                        elif self.ALLOWED_CHAT_IDS:
+                            notify_chat_id = self.ALLOWED_CHAT_IDS[0]
+                        
+                        if self.bot and notify_chat_id:
+                            self.bot.send_message(
+                                chat_id=notify_chat_id,
+                                text=f"🔄 模型已切换为: {switched_to}"
+                            )
+                    except Exception as e:
+                        logger.error(f"UpgradeMonitor: 发送模型切换 TG 通知失败: {e}")
+                    
+                    # 步骤 D: 延迟 2 秒
+                    time.sleep(2)
+                    
+                    # 步骤 E: 检查 Replying 是否可见
+                    logger.info("UpgradeMonitor: 查验切换后的模型是否开始工作 (步骤 E)...")
+                    re_appeared = False
+                    check_start = time.time()
+                    while time.time() - check_start < 10:
+                        if find_replying(self.templates_dir)[0]:
+                            logger.info("UpgradeMonitor: 切换完成！新模型具有配额并已开始 Replying！")
+                            re_appeared = True
+                            break
+                        time.sleep(0.5)
+                    
+                    if not re_appeared:
+                        # 两个模型配额均耗尽
+                        logger.warning("UpgradeMonitor: 切换后未见 Replying，判定账号下两个模型均配额用尽。")
+                        try:
+                            # 发送 TG 通知（发给最后一个对话的用户）
+                            notify_chat_id = None
+                            if self.mcp_server and hasattr(self.mcp_server, 'last_chat_id') and self.mcp_server.last_chat_id:
+                                notify_chat_id = int(self.mcp_server.last_chat_id)
+                            elif self.ALLOWED_CHAT_IDS:
+                                notify_chat_id = self.ALLOWED_CHAT_IDS[0]
+                            
+                            if self.bot and notify_chat_id:
+                                self.bot.send_message(
+                                    chat_id=notify_chat_id,
+                                    text="⚠️ 账号配额已用尽，请手动切换账号"
+                                )
+                        except Exception as e:
+                            logger.error(f"UpgradeMonitor: 发送 TG 通知失败: {e}")
+                    
+                    # 切换后等待较长时间再继续监控（避免频繁触发）
+                    time.sleep(60)
+                    continue
+                
+                # 未发现弹窗，正常休眠 5 秒后继续 (TEST MODE, 正式版改回30)
+                time.sleep(5)
+                
+            except Exception as e:
+                logger.error(f"Upgrade monitor error: {e}")
+                time.sleep(10)
+        
+        logger.info("Upgrade monitor stopped")
+    
     def run(self):
         """Start the bot and MCP server."""
         # 优先启动 MCP Server（在单独线程中监听 stdin）
@@ -392,29 +487,82 @@ class AntigravityBridge:
         
         logger.info("Antigravity Bridge Bot & MCP Server Starting...")
         
-        # 启动 Retry 按钮监控线程
-        self._retry_monitor_running = True
-        retry_thread = threading.Thread(target=self._retry_monitor, daemon=True)
-        retry_thread.start()
-        logger.info("Retry button monitor started")
-        
-        # Start bot in background (Service Binary w/ Polling)
+        import stat
+        is_mcp = False
         try:
-            self.updater.start_polling()
-        except Exception as e:
-            logger.critical(f"Failed to start polling: {e}")
-            if "Unauthorized" in str(e) or "InvalidToken" in str(e):
-                logger.critical("FATAL: The provided Telegram Token is invalid. Please check your .env file.")
-            # MCP Server 仍在运行，不退出进程
+            mode = os.fstat(sys.stdin.fileno()).st_mode
+            if stat.S_ISFIFO(mode):
+                is_mcp = True
+        except Exception:
+            pass
+
+        logger.info(f"Running mode: {'MCP' if is_mcp else 'Daemon'}")
         
+        if not is_mcp:
+            # 使用 PID 文件确保只有一个 Daemon 实例在运行（避免 Telegram polling 冲突）
+            pid_file = '/tmp/antigravity_daemon.pid'
+            current_pid = os.getpid()
+            try:
+                if os.path.exists(pid_file):
+                    with open(pid_file, 'r') as f:
+                        old_pid_str = f.read().strip()
+                    if old_pid_str and old_pid_str.isdigit():
+                        old_pid = int(old_pid_str)
+                        if old_pid != current_pid:
+                            try:
+                                cmdline_file = f'/proc/{old_pid}/cmdline'
+                                if os.path.exists(cmdline_file):
+                                    with open(cmdline_file, 'rb') as f:
+                                        cmdline = f.read().decode('utf-8', errors='ignore').replace('\x00', ' ')
+                                    if 'antigravity' in cmdline.lower() or 'main.py' in cmdline.lower():
+                                        os.kill(old_pid, 9)
+                                        logger.info(f"已清理旧的后台 Daemon 进程: PID {old_pid}")
+                            except ProcessLookupError:
+                                pass
+                            except Exception as e:
+                                logger.debug(f"检查/清理旧进程时出错: {e}")
+                
+                # 写入当前 PID
+                with open(pid_file, 'w') as f:
+                    f.write(str(current_pid))
+            except Exception as e:
+                logger.error(f"PID 文件处理出错: {e}")
+            # 启动 Retry 按钮监控线程
+            self._retry_monitor_running = True
+            retry_thread = threading.Thread(target=self._retry_monitor, daemon=True)
+            retry_thread.start()
+            logger.info("Retry button monitor started")
+            
+            # 启动 Upgrade 弹窗监控线程（步骤 A：持续后台扫描配额弹窗）
+            self._upgrade_monitor_running = True
+            upgrade_thread = threading.Thread(target=self._upgrade_monitor, daemon=True)
+            upgrade_thread.start()
+            logger.info("Upgrade popup monitor started (every 30s)")
+            
+            # Start bot in background (Service Binary w/ Polling)
+            try:
+                self.updater.start_polling()
+            except Exception as e:
+                logger.critical(f"Failed to start polling: {e}")
+                if "Unauthorized" in str(e) or "InvalidToken" in str(e):
+                    logger.critical("FATAL: The provided Telegram Token is invalid. Please check your .env file.")
+        else:
+            logger.info("Running under MCP: Disabled Telegram polling and GUI monitors to prevent conflicts.")
+
         # Keep main thread alive
         try:
             while True:
+                if is_mcp and not mcp_thread.is_alive():
+                    logger.info("MCP thread ended (IDE disconnected pipe). Shutting down main process.")
+                    break
                 time.sleep(1)
         except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt received.")
+        finally:
             logger.info("Shutting down...")
             if hasattr(self, 'updater'):
                 self.updater.stop()
+
 
 
 def main():
