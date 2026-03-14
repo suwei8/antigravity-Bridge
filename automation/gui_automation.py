@@ -12,9 +12,22 @@ import subprocess
 import time
 from typing import Callable, List, Optional, Tuple
 
-import pyautogui
 import pyperclip
 from PIL import Image
+
+# Lazy import for pyautogui — it connects to X11 on import,
+# which crashes if DISPLAY is invalid (e.g. stale SSH X11 forwarding)
+pyautogui = None
+
+def _ensure_pyautogui():
+    """Lazily import pyautogui on first use."""
+    global pyautogui
+    if pyautogui is None:
+        import pyautogui as _pyautogui
+        pyautogui = _pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.PAUSE = 0.1
+    return pyautogui
 
 # Configure logging
 logging.basicConfig(
@@ -22,10 +35,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# PyAutoGUI configuration
-pyautogui.FAILSAFE = True  # Move mouse to corner to abort
-pyautogui.PAUSE = 0.1  # Small pause between actions
 
 # Default confidence levels to try (from high to low)
 DEFAULT_CONFIDENCE_LEVELS = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
@@ -65,6 +74,7 @@ def smart_find_image(
         else:
             print(f"未找到. 调试信息: {result['debug_info']}")
     """
+    _ensure_pyautogui()
     if confidence_levels is None:
         confidence_levels = DEFAULT_CONFIDENCE_LEVELS.copy()
     
@@ -216,6 +226,7 @@ def click_input_box(
         tuple: (success: bool, debug_info: str)
     """
     import subprocess
+    _ensure_pyautogui()
     
     # 1. 尝试激活目标窗口
     activate_window("antigravity")
@@ -261,6 +272,7 @@ def find_replying(templates_dir: str, confidence: float = 0.9) -> tuple:
         if found:
             print(f"找到Replying @ {location}")
     """
+    _ensure_pyautogui()
     image_path = os.path.join(templates_dir, "Replying.png")
     
     try:
@@ -290,6 +302,7 @@ def click_accept_button(templates_dir: str, confidence: float = 0.7) -> tuple:
     """
     import subprocess
     
+    _ensure_pyautogui()
     # 尝试查找的模板列表
     templates = ["accept_button.png", "accept_all.png"]
     
@@ -467,6 +480,7 @@ def find_image(
     Returns:
         Tuple of (x, y) center coordinates if found, None otherwise
     """
+    _ensure_pyautogui()
     try:
         if not os.path.exists(image_path):
             logger.error(f"Template image not found: {image_path}")
@@ -541,6 +555,7 @@ def find_and_click(
 
 def paste_and_submit():
     """Perform Ctrl+V then Enter keystrokes."""
+    _ensure_pyautogui()
     logger.info("PasteAndSubmit: Sending Ctrl+V...")
     pyautogui.hotkey('ctrl', 'v')
     time.sleep(0.2)
@@ -561,6 +576,7 @@ def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optio
     - "SWITCHED:*": 成功点击了备用模型并输入了 continue
     """
     
+    _ensure_pyautogui()
     # 1. 在整个屏幕上查找 "Upgrade.png" 和 "Upgrade2.png"，"Upgrade3.png"找到任意一个才触发切换
     upgrade_found = False
     for template in ["Upgrade.png", "Upgrade2.png", "Upgrade3.png"]:
@@ -845,6 +861,7 @@ def full_workflow(
         confidence: 图像匹配置信度
         reply_event: threading.Event, MCP 回复后 set, 停止思考中
     """
+    _ensure_pyautogui()
     # 1. 复制文本到剪贴板
     if not set_clipboard(text):
         logger.error("Error setting clipboard")
@@ -958,6 +975,7 @@ def full_workflow_media_group(
         file_paths: 非图片文件路径列表
         reply_event: threading.Event, MCP 回复后 set, 停止思考中
     """
+    _ensure_pyautogui()
     if file_paths is None:
         file_paths = []
     # 1. 处理每张图片

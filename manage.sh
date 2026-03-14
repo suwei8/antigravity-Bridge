@@ -68,24 +68,93 @@ check_dependencies() {
     fi
 }
 
+_validate_display() {
+    # 验证给定的 DISPLAY 是否可连通
+    # 返回 0 表示可用，1 表示不可用
+    local test_display="$1"
+    if [ -z "$test_display" ]; then
+        return 1
+    fi
+    DISPLAY="$test_display" xdpyinfo >/dev/null 2>&1
+    return $?
+}
+
 setup_env() {
-    # 优先使用当前环境变量中的 DISPLAY 如果它非空的话
-    local detected_display="$DISPLAY"
-    
-    # 如果为空，则尝试从X11 socket寻找属于当前用户的显示器
-    if [ -z "$detected_display" ]; then
-        local user_uid=$(id -u)
-        local x_socket=$(find /tmp/.X11-unix/ -maxdepth 1 -name 'X*' -user "$user_uid" 2>/dev/null | head -n 1 | sed 's|.*/X||')
-        if [ -n "$x_socket" ]; then
-            detected_display=":$x_socket"
-        else
-            detected_display=$(w | grep -o ':[0-9]\+\.[0-9]\+' | head -1)
-            if [ -z "$detected_display" ]; then
-                detected_display=$(w | grep -o ':[0-9]\+' | head -1)
+    local detected_display=""
+    local candidates=()
+
+    # 1. 从 X11 unix socket 获取候选（最可靠，排除 SSH X11 forwarding 的高端口号）
+    local user_uid=$(id -u)
+    for sock in $(find /tmp/.X11-unix/ -maxdepth 1 -name 'X*' 2>/dev/null | sort); do
+        local num=$(echo "$sock" | sed 's|.*/X||')
+        if [ -n "$num" ]; then
+            candidates+=(":$num")
+        fi
+    done
+
+    # 2. 如果当前环境有 DISPLAY，加入候选（但不一定优先，需验证）
+    if [ -n "$DISPLAY" ]; then
+        # 去重：如果已经在候选中就不重复添加
+        local already=0
+        for c in "${candidates[@]}"; do
+            # 标准化比较（:10.0 vs :10）
+            local norm_c=$(echo "$c" | sed 's/\.[0-9]*$//')
+            local norm_d=$(echo "$DISPLAY" | sed 's/\.[0-9]*$//')
+            if [ "$norm_c" = "$norm_d" ]; then
+                already=1
+                break
             fi
+        done
+        if [ $already -eq 0 ]; then
+            candidates+=("$DISPLAY")
         fi
     fi
-    export DISPLAY="${detected_display:-:0}"
+
+    # 3. 从 w 命令获取额外候选
+    for d in $(w 2>/dev/null | grep -o ':[0-9]\+\(\.[0-9]\+\)\?' | sort -u); do
+        local already=0
+        for c in "${candidates[@]}"; do
+            local norm_c=$(echo "$c" | sed 's/\.[0-9]*$//')
+            local norm_d=$(echo "$d" | sed 's/\.[0-9]*$//')
+            if [ "$norm_c" = "$norm_d" ]; then
+                already=1
+                break
+            fi
+        done
+        if [ $already -eq 0 ]; then
+            candidates+=("$d")
+        fi
+    done
+
+    # 4. 兜底：加入 :0 和 :1
+    for fallback in ":0" ":1"; do
+        local already=0
+        for c in "${candidates[@]}"; do
+            if [ "$c" = "$fallback" ]; then
+                already=1
+                break
+            fi
+        done
+        if [ $already -eq 0 ]; then
+            candidates+=("$fallback")
+        fi
+    done
+
+    # 5. 逐个验证，使用第一个可连通的 DISPLAY
+    for candidate in "${candidates[@]}"; do
+        if _validate_display "$candidate"; then
+            detected_display="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$detected_display" ]; then
+        # 全部验证失败，使用 :0 作为兜底（程序内部会处理连接失败）
+        detected_display=":0"
+        echo -e "${RED}[WARN] 未找到可用的 X11 DISPLAY，使用默认值 :0${NC}"
+    fi
+
+    export DISPLAY="$detected_display"
     export XAUTHORITY="$HOME/.Xauthority"
     info "检测并配置环境变量: DISPLAY=$DISPLAY, XAUTHORITY=$XAUTHORITY"
 
