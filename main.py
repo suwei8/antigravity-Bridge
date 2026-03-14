@@ -40,9 +40,6 @@ from telegram.ext import (
 from automation.gui_automation import (
     full_workflow,
     full_workflow_media_group,
-    find_and_click,
-    find_replying,
-    handle_model_switch,
 )
 from mcp.server import MCPServer
 
@@ -75,7 +72,6 @@ class AntigravityBridge:
         self.buffer_lock = threading.Lock()
         self.bot: Optional[Bot] = None
         self.templates_dir: str = ""
-        self._retry_monitor_running = False
         self.mcp_server: Optional[MCPServer] = None  # MCP Server 引用，用于设置 last_chat_id
         self.ALLOWED_CHAT_IDS: list = []  # 从 .env 读取
         
@@ -351,117 +347,6 @@ class AntigravityBridge:
             logger.error(f"Error sending to Telegram: {e}")
             return e
     
-    def _retry_monitor(self):
-        """
-        后台监控 Retry 按钮并自动点击。
-        
-        当 IDE 因网络问题断开时会出现 Retry 对话框，
-        此线程持续监控并自动点击 Retry 按钮恢复连接。
-        """
-        retry_img = os.path.join(self.templates_dir, "Retry.png")
-        logger.info(f"Retry monitor started. Watching for: {retry_img}")
-        
-        while self._retry_monitor_running:
-            try:
-                success, debug_info = find_and_click(
-                    retry_img,
-                    confidence=0.8,
-                    offset=(0, 0)
-                )
-                if success:
-                    logger.info(f"Retry button clicked: {debug_info}")
-                    # 点击后等待稍长时间，避免重复点击
-                    time.sleep(3)
-                else:
-                    # 未找到按钮，休眠后继续监控（节省系统资源）
-                    time.sleep(5)
-            except Exception as e:
-                logger.error(f"Retry monitor error: {e}")
-                time.sleep(2)
-        
-        logger.info("Retry monitor stopped")
-    
-    def _upgrade_monitor(self):
-        """
-        后台监控 Upgrade/Enable Overages 弹窗并自动执行模型切换。
-        
-        这是用户设计的步骤 A：持续在屏幕上查找配额用尽弹窗。
-        每 30 秒执行一次检查，以节省系统资源。
-        发现弹窗后执行完整的 B/C/D/E 切换流程。
-        """
-        logger.info("Upgrade monitor started. Checking every 5s for quota popups (TEST MODE).")
-        
-        while self._upgrade_monitor_running:
-            try:
-                # 步骤 A: 检查 Upgrade 弹窗
-                switch_status = handle_model_switch(self.templates_dir)
-                
-                if switch_status and switch_status.startswith("SWITCHED"):
-                    # 解析切换到的模型名称
-                    switched_to = switch_status.split(":", 1)[1] if ":" in switch_status else "未知模型"
-                    logger.info(f"UpgradeMonitor: 检测到配额弹窗并成功切换模型至 {switched_to} + 发送 continue (步骤 B/C)")
-                    
-                    # 发送 TG 通知：模型已切换（发给最后一个对话的用户）
-                    try:
-                        notify_chat_id = None
-                        if self.mcp_server and hasattr(self.mcp_server, 'last_chat_id') and self.mcp_server.last_chat_id:
-                            notify_chat_id = int(self.mcp_server.last_chat_id)
-                        elif self.ALLOWED_CHAT_IDS:
-                            notify_chat_id = self.ALLOWED_CHAT_IDS[0]
-                        
-                        if self.bot and notify_chat_id:
-                            self.bot.send_message(
-                                chat_id=notify_chat_id,
-                                text=f"🔄 模型已切换为: {switched_to}"
-                            )
-                    except Exception as e:
-                        logger.error(f"UpgradeMonitor: 发送模型切换 TG 通知失败: {e}")
-                    
-                    # 步骤 D: 延迟 2 秒
-                    time.sleep(2)
-                    
-                    # 步骤 E: 检查 Replying 是否可见
-                    logger.info("UpgradeMonitor: 查验切换后的模型是否开始工作 (步骤 E)...")
-                    re_appeared = False
-                    check_start = time.time()
-                    while time.time() - check_start < 10:
-                        if find_replying(self.templates_dir)[0]:
-                            logger.info("UpgradeMonitor: 切换完成！新模型具有配额并已开始 Replying！")
-                            re_appeared = True
-                            break
-                        time.sleep(0.5)
-                    
-                    if not re_appeared:
-                        # 两个模型配额均耗尽
-                        logger.warning("UpgradeMonitor: 切换后未见 Replying，判定账号下两个模型均配额用尽。")
-                        try:
-                            # 发送 TG 通知（发给最后一个对话的用户）
-                            notify_chat_id = None
-                            if self.mcp_server and hasattr(self.mcp_server, 'last_chat_id') and self.mcp_server.last_chat_id:
-                                notify_chat_id = int(self.mcp_server.last_chat_id)
-                            elif self.ALLOWED_CHAT_IDS:
-                                notify_chat_id = self.ALLOWED_CHAT_IDS[0]
-                            
-                            if self.bot and notify_chat_id:
-                                self.bot.send_message(
-                                    chat_id=notify_chat_id,
-                                    text="⚠️ 账号配额已用尽，请手动切换账号"
-                                )
-                        except Exception as e:
-                            logger.error(f"UpgradeMonitor: 发送 TG 通知失败: {e}")
-                    
-                    # 切换后等待较长时间再继续监控（避免频繁触发）
-                    time.sleep(60)
-                    continue
-                
-                # 未发现弹窗，正常休眠 5 秒后继续 (TEST MODE, 正式版改回30)
-                time.sleep(5)
-                
-            except Exception as e:
-                logger.error(f"Upgrade monitor error: {e}")
-                time.sleep(10)
-        
-        logger.info("Upgrade monitor stopped")
     
     def run(self):
         """Start the bot and MCP server."""
@@ -527,18 +412,6 @@ class AntigravityBridge:
                     f.write(str(current_pid))
             except Exception as e:
                 logger.error(f"PID 文件处理出错: {e}")
-            # 启动 Retry 按钮监控线程
-            self._retry_monitor_running = True
-            retry_thread = threading.Thread(target=self._retry_monitor, daemon=True)
-            retry_thread.start()
-            logger.info("Retry button monitor started")
-            
-            # 启动 Upgrade 弹窗监控线程（步骤 A：持续后台扫描配额弹窗）
-            self._upgrade_monitor_running = True
-            upgrade_thread = threading.Thread(target=self._upgrade_monitor, daemon=True)
-            upgrade_thread.start()
-            logger.info("Upgrade popup monitor started (every 30s)")
-            
             # Start bot in background (Service Binary w/ Polling)
             try:
                 self.updater.start_polling()

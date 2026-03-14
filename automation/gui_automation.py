@@ -557,13 +557,14 @@ def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optio
     
     返回状态:
     - "NOT_FOUND": 未发现 Upgrade 弹窗
+    - "UPGRADE_DETECTED": 发现 Upgrade 弹窗但切换未成功（面板/目标模型未找到）
     - "SWITCHED:*": 成功点击了备用模型并输入了 continue
     """
     
     # 1. 在整个屏幕上查找 "Upgrade.png" 和 "Upgrade2.png"，"Upgrade3.png"找到任意一个才触发切换
     upgrade_found = False
     for template in ["Upgrade.png", "Upgrade2.png", "Upgrade3.png"]:
-        res = smart_find_image(os.path.join(templates_dir, template), confidence_levels=[0.95, 0.90, 0.85])
+        res = smart_find_image(os.path.join(templates_dir, template), confidence_levels=[0.8])
         if res.get('found'):
             upgrade_found = True
             logger.info(f"升级弹窗识别成功: {template}, confidence: {res.get('confidence')}")
@@ -618,7 +619,7 @@ def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optio
             logger.info(f"✅ 已保存现场截图至: {screenshot_path}")
         except Exception as e:
             logger.error(f"❌ 现场截图保存失败: {e}")
-        return "NOT_FOUND"
+        return "UPGRADE_DETECTED"
         
     # 3. 点击面板（向下偏移 10px，使用 pynput mouse）
     px, py = panel_loc
@@ -657,7 +658,7 @@ def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optio
 
     if not target_loc:
         logger.error(f"❌ 未找到 {os.path.basename(target_img)}，流程中断")
-        return "NOT_FOUND"
+        return "UPGRADE_DETECTED"
 
     # 5. 点击目标模型
     tx, ty = target_loc
@@ -683,150 +684,135 @@ def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optio
     return f"SWITCHED:{target_name}"
 
 
+def _check_retry(templates_dir: str) -> bool:
+    """
+    检查并点击 Retry 按钮（IDE 网络断开时弹出）。
+    
+    Returns:
+        True 如果找到并点击了 Retry 按钮
+    """
+    retry_img = os.path.join(templates_dir, "Retry.png")
+    success, debug_info = find_and_click(retry_img, confidence=0.8, offset=(0, 0))
+    if success:
+        logger.info(f"_check_retry: Retry 按钮已点击: {debug_info}")
+        return True
+    return False
+
+
 def monitor_process(
     templates_dir: str,
     send_status: Optional[Callable[[str], None]] = None,
     reply_event=None
 ):
     """
-    Monitor the reply process and interact as needed.
+    监控 IDE 回复过程，按三阶段模型运行：
+    
+    阶段 1: 等待 Replying 出现（最多 5 秒，纯等待无监控）
+    阶段 2: Replying 可见期间（Accept + 心跳消息，每 10 秒）
+    阶段 3: Replying 消失后 3 秒缓冲，统一检测 Retry / Upgrade
     """
-    logger.info("MonitorProcess: Starting loop...")
+    logger.info("MonitorProcess: Starting...")
+    timeout = 300  # 总超时 5 分钟
+    overall_start = time.time()
     
-    # ---------- 第一阶段：首屏等待与即时配额拦截检测 ----------
-    logger.info("MonitorProcess: Waiting for 'Replying' to appear...")
-    appeared = False
-    start_time = time.time()
-    
-    # 给最多 5 秒寻找 Replying
-    while time.time() - start_time < 5:
-        if reply_event and reply_event.is_set():
-            logger.info("MonitorProcess: reply_event set during wait phase. Stopping.")
-            return
+    while time.time() - overall_start < timeout:
+        # ========== 阶段 1: 纯等待 Replying 出现（最多 5 秒） ==========
+        logger.info("MonitorProcess [阶段1]: 等待 Replying 出现...")
+        appeared = False
+        phase1_start = time.time()
+        
+        while time.time() - phase1_start < 5:
+            if reply_event and reply_event.is_set():
+                logger.info("MonitorProcess [阶段1]: reply_event 已 set，停止。")
+                return
             
-        found, _ = find_replying(templates_dir)
-        if found:
-            logger.info("MonitorProcess: 'Replying' detected! Entering continuous monitor loop.")
-            appeared = True
-            break
+            found, _ = find_replying(templates_dir)
+            if found:
+                logger.info("MonitorProcess [阶段1]: Replying 已出现！进入阶段 2。")
+                appeared = True
+                break
+            time.sleep(0.5)
+        
+        if not appeared:
+            # Replying 从未出现 → 等同于"Replying 消失"，直接进入阶段 3
+            logger.info("MonitorProcess [阶段1]: 5 秒内未见 Replying，进入阶段 3 检测。")
+            # 跳到阶段 3（下方）
+        else:
+            # ========== 阶段 2: Replying 可见，IDE 正常工作中 ==========
+            logger.info("MonitorProcess [阶段2]: IDE 工作中，启动 Accept + 心跳监控。")
+            last_heartbeat_time = time.time()
+            not_found_count = 0
             
-        # 若没找到 Replying，则在等待期间同步扫一眼是否立刻弹了 Upgrade 弹窗 (步骤 A/B/C/D)
-        # Passing reply_event to ensure we don't switch models if we already replied
+            while time.time() - overall_start < timeout:
+                if reply_event and reply_event.is_set():
+                    logger.info("MonitorProcess [阶段2]: reply_event 已 set，IDE 已回复。停止。")
+                    return
+                
+                time.sleep(1)
+                
+                found, _ = find_replying(templates_dir)
+                if found:
+                    # Replying 仍然可见，复位消失计数
+                    not_found_count = 0
+                    
+                    # 每 10 秒：Accept 点击 + 心跳消息
+                    if time.time() - last_heartbeat_time >= 10:
+                        # 发送心跳消息
+                        if send_status:
+                            current_time = time.strftime("%H:%M:%S", time.localtime())
+                            logger.info(f"MonitorProcess [阶段2]: 心跳 ({current_time})")
+                            send_status(f"思考中...({current_time})")
+                        # 尝试点击 Accept 按钮
+                        success, info = click_accept_button(templates_dir)
+                        if success:
+                            logger.info(f"MonitorProcess [阶段2]: Accept 已点击: {info}")
+                        last_heartbeat_time = time.time()
+                else:
+                    # Replying 不可见
+                    not_found_count += 1
+                    logger.info(f"MonitorProcess [阶段2]: Replying 不可见 ({not_found_count}/3)")
+                    
+                    if not_found_count >= 3:
+                        # 消失超过 3 秒 → 进入阶段 3
+                        logger.info("MonitorProcess [阶段2]: Replying 已消失 3 秒，进入阶段 3 检测。")
+                        break
+            else:
+                # 总超时退出
+                logger.warning("MonitorProcess [阶段2]: 总超时 300 秒，退出。")
+                return
+        
+        # ========== 阶段 3: 关键判断点 - 统一检测 Retry / Upgrade ==========
         if reply_event and reply_event.is_set():
-            logger.info("MonitorProcess: reply_event is set. Aborting model switch check.")
+            logger.info("MonitorProcess [阶段3]: reply_event 已 set，停止。")
             return
-
+        
+        logger.info("MonitorProcess [阶段3]: 开始检测 Retry / Upgrade...")
+        
+        # 3a. 检查 Retry 按钮（网络断开）
+        if _check_retry(templates_dir):
+            logger.info("MonitorProcess [阶段3]: 发现 Retry，已点击恢复。等待 3 秒后回到阶段 1...")
+            time.sleep(3)
+            continue  # 回到阶段 1
+        
+        # 3b. 检查 Upgrade 弹窗（配额耗尽）
         switch_status = handle_model_switch(templates_dir, reply_event, send_status)
         if switch_status and switch_status.startswith("SWITCHED"):
-            logger.info("MonitorProcess: 发现了 Upgrade 并成功切换模型 + 发送 continue. (步骤 C)")
-            # 步骤 D: 延迟 2 秒给界面反应时间
+            switched_to = switch_status.split(":", 1)[1] if ":" in switch_status else "未知模型"
+            logger.info(f"MonitorProcess [阶段3]: 配额耗尽，已切换模型至 {switched_to} + 发送 continue。等待 2 秒后回到阶段 1...")
             time.sleep(2)
-            
-            # 步骤 E: 再次检测 Replying 是否可见
-            logger.info("MonitorProcess: 查验切换后的模型是否开始工作...")
-            re_appeared = False
-            check_start = time.time()
-            # 给新模型 10 秒时间弹出 Replying
-            while time.time() - check_start < 10:
-                if reply_event and reply_event.is_set():
-                    logger.info("MonitorProcess: reply_event set after switch. Stopping.")
-                    return
-                if find_replying(templates_dir)[0]:
-                    logger.info("MonitorProcess: 切换完成，被切换的模型具有配额并已开始 Replying！")
-                    re_appeared = True
-                    break
-                time.sleep(0.5)
-                
-            if re_appeared:
-                appeared = True
-                break # 跳出第一阶段等待，进入第二阶段持续监控
-            else:
-                # 切换后仍不见 Replying -> 两个模型配额均耗尽
-                logger.warning("MonitorProcess: 切换后迟迟未见 Replying，判定账号下两个模型均配额用尽。")
-                if send_status:
-                    send_status("账号配额已用尽，请手动切换账号")
-                return
-                
-        time.sleep(0.5)
-    
-    if not appeared:
-        logger.warning("MonitorProcess: 首屏等待超时(5s)未见 Replying，也未见 Upgrade 弹窗，可能网络极慢或遇到不可知错误，退出监控。")
+            continue  # 回到阶段 1（等待新模型的 Replying）
+        
+        # 3b-retry. Upgrade 已发现但切换未完成（面板/目标模型没找到），等待后重试
+        if switch_status == "UPGRADE_DETECTED":
+            logger.warning("MonitorProcess [阶段3]: Upgrade 弹窗存在但切换失败，5 秒后重试...")
+            time.sleep(5)
+            continue  # 回到阶段 1 重试
+        
+        # 3c. 都没找到 → IDE 正常结束工作
+        logger.info("MonitorProcess [阶段3]: 未发现 Retry/Upgrade，IDE 正常完成工作。退出。")
         return
     
-    # ---------- 第二阶段：日常回复期间的持续监控 ----------
-    last_action_time = time.time()
-    heartbeat_start_time = time.time()  # 心跳计时起点，用于计算累计时间
-    not_found_count = 0
-    max_not_found = 3  # Based on user requirement: 3 * 1s intervals
-    timeout = 300
-    monitor_start = time.time()
-    
-    while time.time() - monitor_start < timeout:
-        if reply_event and reply_event.is_set():
-            logger.info("MonitorProcess: reply_event set, IDE has replied. Stopping.")
-            return
-        
-        time.sleep(1)
-        
-        # 持续找 Replying
-        found, _ = find_replying(templates_dir)
-        if not found:
-            not_found_count += 1
-            logger.info(f"MonitorProcess: 'Replying' not found ({not_found_count}/{max_not_found})")
-            
-            if not_found_count >= max_not_found:
-                # 消失超过 3 秒 -> 期间有可能突然弹出 Upgrade（中途断气）
-                if reply_event and reply_event.is_set():
-                    logger.info("MonitorProcess: reply_event is set mid-flight. Stopping loop naturally.")
-                    return
-
-                switch_status = handle_model_switch(templates_dir, reply_event, send_status)
-                if switch_status and switch_status.startswith("SWITCHED"):
-                    logger.info("MonitorProcess: 回复途中配额耗尽，已切换模型 + 发送 continue.")
-                    time.sleep(2) # 步骤 D 延迟
-                    
-                    # 步骤 E 验证
-                    check_start = time.time()
-                    re_appeared = False
-                    while time.time() - check_start < 10:
-                        if reply_event and reply_event.is_set():
-                            logger.info("MonitorProcess: reply_event set after mid-switch. Stopping.")
-                            return
-                        if find_replying(templates_dir)[0]:
-                            logger.info("MonitorProcess: 回复途中切换完成，新模型生效中。")
-                            re_appeared = True
-                            break
-                        time.sleep(0.5)
-                        
-                    if re_appeared:
-                        monitor_start = time.time() # 刷新超时
-                        last_action_time = time.time()
-                        continue # 继续第二阶段
-                    else:
-                        logger.warning("MonitorProcess: 回复途中切换后未见新 Replying，判定两个模型均已耗尽。")
-                        if send_status:
-                            send_status("账号配额已用尽，请手动切换账号")
-                        return
-                
-                # 若 Replying 消失，且并非 Upgrade 耗尽，判定为自然结束或非预期消失
-                logger.info("MonitorProcess: 'Replying' gone naturally. Stopping loop.")
-                return
-            continue
-        
-        # 如果找到了 Replying，复位倒数
-        not_found_count = 0
-        
-        # 兜底发点击 Accept 的动作心跳（每 10 秒一次）
-        if time.time() - last_action_time >= 10:
-            if send_status:
-                current_time = time.strftime("%H:%M:%S", time.localtime())
-                logger.info(f"MonitorProcess: Sending heartbeat ({current_time})")
-                send_status(f"思考中...({current_time})")
-            success, info = click_accept_button(templates_dir)
-            if success:
-                logger.info(f"MonitorProcess: Accept 按钮已点击: {info}")
-            last_action_time = time.time()
-            heartbeat_start_time = time.time()  # 重置心跳计时
+    logger.warning("MonitorProcess: 总超时 300 秒，退出。")
     
 
 

@@ -69,7 +69,7 @@ sleep 2
 wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
 chmod +x /tmp/antigravity-bridge
 mv /tmp/antigravity-bridge ./antigravity-bridge
-chmod +x /home/sw/antigravity-bridge
+chmod +x ./antigravity-bridge
 # 重启
 cd /home/sw/
 ./manage.sh restart
