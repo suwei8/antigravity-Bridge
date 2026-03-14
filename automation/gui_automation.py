@@ -19,10 +19,69 @@ from PIL import Image
 # which crashes if DISPLAY is invalid (e.g. stale SSH X11 forwarding)
 pyautogui = None
 
+
+def _fix_display():
+    """Validate current DISPLAY and auto-fix if broken.
+    
+    Checks if the current DISPLAY env var points to a live X server.
+    If not, scans /tmp/.X11-unix/ sockets and common display numbers
+    to find a working one. Updates os.environ['DISPLAY'] in-place.
+    """
+    import subprocess as _sp
+    import glob
+
+    current = os.environ.get('DISPLAY', '')
+
+    # Quick check: is current DISPLAY valid?
+    def _is_valid(d):
+        if not d:
+            return False
+        try:
+            r = _sp.run(
+                ['xdpyinfo'],
+                env={**os.environ, 'DISPLAY': d},
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                timeout=3
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    if _is_valid(current):
+        return  # Current DISPLAY works fine
+
+    logging.getLogger(__name__).warning(
+        f"DISPLAY={current!r} is not reachable, scanning for valid X11 display..."
+    )
+
+    # Build candidate list: X11 sockets first, then common fallbacks
+    candidates = []
+    for sock in sorted(glob.glob('/tmp/.X11-unix/X*')):
+        num = sock.rsplit('X', 1)[-1]
+        candidates.append(f':{num}')
+
+    for fallback in [':0', ':1', ':2']:
+        if fallback not in candidates:
+            candidates.append(fallback)
+
+    for candidate in candidates:
+        if _is_valid(candidate):
+            os.environ['DISPLAY'] = candidate
+            logging.getLogger(__name__).info(
+                f"Auto-fixed DISPLAY: {current!r} -> {candidate!r}"
+            )
+            return
+
+    logging.getLogger(__name__).error(
+        f"No valid X11 display found (tried: {candidates}). GUI operations will fail."
+    )
+
+
 def _ensure_pyautogui():
-    """Lazily import pyautogui on first use."""
+    """Lazily import pyautogui on first use, after validating DISPLAY."""
     global pyautogui
     if pyautogui is None:
+        _fix_display()
         import pyautogui as _pyautogui
         pyautogui = _pyautogui
         pyautogui.FAILSAFE = True
