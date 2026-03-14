@@ -63,12 +63,16 @@ chmod +x manage.sh
 ### 4. 手动更新
 
 ```bash
-./manage.sh stop
+# 杀掉正在运行的老服务
+pkill -9 -f "antigravity-bridge"
 sleep 2
 wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
 chmod +x /tmp/antigravity-bridge
 mv /tmp/antigravity-bridge ./antigravity-bridge
-./manage.sh start
+chmod +x /home/sw/antigravity-bridge
+# 重启
+cd /home/sw/
+./manage.sh restart
 ```
 
 ## 源码开发

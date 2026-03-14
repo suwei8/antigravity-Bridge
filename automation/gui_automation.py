@@ -549,19 +549,20 @@ def paste_and_submit():
     pyautogui.press('return')
 
 
-def handle_model_switch(templates_dir: str, reply_event=None) -> str:
+def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optional[Callable[[str], None]] = None) -> str:
     """
     检查模型配额耗尽并自动尝试切换模型（执行一次 continue）。
+    
+    采用全屏查找 + pynput 鼠标点击的稳健方案（已通过 debug_find_pane.py 验证）。
+    
     返回状态:
     - "NOT_FOUND": 未发现 Upgrade 弹窗
-    - "SWITCHED": 成功点击了备用模型并输入了 continue
+    - "SWITCHED:*": 成功点击了备用模型并输入了 continue
     """
     
-    # 1. 检查 Upgrade 图像 (对应步骤 A)
-    # 严格限制 confidence 避免在空闲状态时全屏匹配到假阳性 (False Positives)
-    # 将置信度设定为 [0.95, 0.90, 0.85] 平衡匹配率，防止太高匹配不到，太低全屏误触
+    # 1. 在整个屏幕上查找 "Upgrade.png" 和 "Upgrade2.png"，"Upgrade3.png"找到任意一个才触发切换
     upgrade_found = False
-    for template in ["Upgrade.png", "Upgrade2.png"]:
+    for template in ["Upgrade.png", "Upgrade2.png", "Upgrade3.png"]:
         res = smart_find_image(os.path.join(templates_dir, template), confidence_levels=[0.95, 0.90, 0.85])
         if res.get('found'):
             upgrade_found = True
@@ -572,76 +573,114 @@ def handle_model_switch(templates_dir: str, reply_event=None) -> str:
         return "NOT_FOUND"
         
     logger.info("检测到 Upgrade 弹窗，开始处理单次模型切换")
+    from pynput.mouse import Controller, Button
+    mouse = Controller()
     
-    # 2. 不再点击 Dismiss，直接查找模型选择面板并点击备用模型 (对应步骤 B)
+    time.sleep(1)
+    
+    # 2. 全屏查找面板（与 debug_find_pane.py 一致，不使用 region 限制）
     panel_opus = os.path.join(templates_dir, "panel-ClaudeOpus.png")
     panel_gemini = os.path.join(templates_dir, "panel-Gemini.png")
-    
+
     found_panel = None
-    for conf in [0.85, 0.8, 0.75, 0.7, 0.65, 0.6]:
-        if find_image(panel_opus, confidence=conf):
-            found_panel = "opus"
-            logger.info(f"找到 Claude 面板, confidence={conf}")
-            break
-        elif find_image(panel_gemini, confidence=conf):
-            found_panel = "gemini"
-            logger.info(f"找到 Gemini 面板, confidence={conf}")
-            break
+    panel_loc = None
+
+    # 查找 panel-ClaudeOpus.png（全屏，confidence=0.8）
+    for conf in [0.8]:
+        try:
+            loc = pyautogui.locateCenterOnScreen(panel_opus, confidence=conf)
+            if loc:
+                found_panel = "opus"
+                panel_loc = (int(loc.x), int(loc.y))
+                logger.info(f"✅ 找到 panel-ClaudeOpus.png @ {panel_loc}, confidence={conf}")
+                break
+        except pyautogui.ImageNotFoundException:
+            pass
+
+    # 查找 panel-Gemini.png（全屏，confidence=0.8）
+    if not found_panel:
+        for conf in [0.8]:
+            try:
+                loc = pyautogui.locateCenterOnScreen(panel_gemini, confidence=conf)
+                if loc:
+                    found_panel = "gemini"
+                    panel_loc = (int(loc.x), int(loc.y))
+                    logger.info(f"✅ 找到 panel-Gemini.png @ {panel_loc}, confidence={conf}")
+                    break
+            except pyautogui.ImageNotFoundException:
+                pass
         
     if not found_panel:
-        logger.warning("未找到当前应用的模型面板（所有置信度均未命中），无法确认切向哪个模型")
+        logger.warning("❌ 全屏查找均未找到面板")
+        try:
+            screenshot_path = os.path.join(os.getcwd(), "failed_find_panel.png")
+            pyautogui.screenshot().save(screenshot_path)
+            logger.info(f"✅ 已保存现场截图至: {screenshot_path}")
+        except Exception as e:
+            logger.error(f"❌ 现场截图保存失败: {e}")
         return "NOT_FOUND"
         
-    # 根据当前面板选择备用模型并点击
-    target_img = ""
-    switched_to = ""
-    if found_panel == "opus":
-        target_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
-        switched_to = "Gemini 3.1 Pro"
-        # 展开面板
-        find_and_click(panel_opus, confidence=0.8)
-    else:
-        target_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
-        switched_to = "Claude Opus 4.6"
-        # 展开面板
-        find_and_click(panel_gemini, confidence=0.8)
-        
-    time.sleep(1) # 给予下拉菜单展开的时间
-        
-    # 尝试更低的 confidence 以适应界面微小变化
-    success = False
-    for conf in [0.8, 0.7, 0.6, 0.5]:
-        if find_and_click(target_img, confidence=conf)[0]:
-            success = True
-            break
-            
-    if success:
-        logger.info(f"成功点击备用模型: {os.path.basename(target_img)}")
-    else:
-        logger.warning(f"备用模型点击失败: {os.path.basename(target_img)}")
-        pyautogui.click(100, 100)
-        return "NOT_FOUND"
-            
-    time.sleep(1) # 给予界面切换模型的加载时间
+    # 3. 点击面板（向下偏移 10px，使用 pynput mouse）
+    px, py = panel_loc
+    logger.info(f"🖱️ 移动鼠标到 ({px}, {py + 10}) 并点击...")
+    time.sleep(1)
+    mouse.position = (px, py + 10)
+    time.sleep(1)
+    mouse.click(Button.left, 1)
+    logger.info("✅ 面板点击完成")
 
-    # 3. 输入 continue + 回车 (对应步骤 C)
-    # Check if we should even send "continue" by consulting reply_event if provided
-    # Note: adding reply_event to handle_model_switch signature
-    
-    success, debug = click_input_box(templates_dir)
-    if success:
-        time.sleep(0.3)
-        set_clipboard("continue")
-        time.sleep(0.2)
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.3)
-        pyautogui.press('return')
-        logger.info("已提交 continue")
-        return f"SWITCHED:{switched_to}"
+    # 4. 延迟 3 秒等待下拉菜单展开，然后全屏查找目标模型
+    time.sleep(3)
+
+    if found_panel == "opus":
+        # A情况：当前是 Claude Opus，切换到 Gemini
+        target_img = os.path.join(templates_dir, "Gemini3.1Pro-High.png")
+        target_name = "Gemini3.1 Pro High"
+        logger.info("A情况：找到 panel-ClaudeOpus.png，查找 Gemini3.1Pro-High.png...")
     else:
-        logger.warning(f"无法点击输入框发送 continue: {debug}")
-        # 如果连输入框都找不到，说明界面异常，也视作失败
+        # B情况：当前是 Gemini，切换到 Claude Opus
+        target_img = os.path.join(templates_dir, "Claude-Opus-4.6-Thinking.png")
+        target_name = "Claude Opus 4.6 Thinking"
+        logger.info("B情况：找到 panel-Gemini.png，查找 Claude-Opus-4.6-Thinking.png...")
+
+    # 全屏查找目标模型（confidence=0.8，与 debug 脚本一致）
+    target_loc = None
+    for conf in [0.8]:
+        try:
+            loc = pyautogui.locateCenterOnScreen(target_img, confidence=conf)
+            if loc:
+                target_loc = (int(loc.x), int(loc.y))
+                logger.info(f"✅ 找到 {os.path.basename(target_img)} @ {target_loc}, confidence={conf}")
+                break
+        except pyautogui.ImageNotFoundException:
+            pass
+
+    if not target_loc:
+        logger.error(f"❌ 未找到 {os.path.basename(target_img)}，流程中断")
         return "NOT_FOUND"
+
+    # 5. 点击目标模型
+    tx, ty = target_loc
+    mouse.position = (tx, ty)
+    time.sleep(1)
+    mouse.click(Button.left, 1)
+    logger.info(f"✅ {target_name} 点击完成")
+
+    # 6. 延迟 1 秒，执行 continue（直接粘贴 + 回车，与 debug 脚本一致）
+    time.sleep(1)
+    set_clipboard("continue")
+    time.sleep(0.2)
+    pyautogui.hotkey('ctrl', 'v')
+    time.sleep(0.3)
+    pyautogui.press('return')
+    logger.info("✅ continue 已提交")
+
+    # 7. 发送 TG 通知
+    time.sleep(1)
+    if send_status:
+        send_status(f"🔄 模型已切换为: {target_name}")
+
+    return f"SWITCHED:{target_name}"
 
 
 def monitor_process(
@@ -677,7 +716,7 @@ def monitor_process(
             logger.info("MonitorProcess: reply_event is set. Aborting model switch check.")
             return
 
-        switch_status = handle_model_switch(templates_dir, reply_event)
+        switch_status = handle_model_switch(templates_dir, reply_event, send_status)
         if switch_status and switch_status.startswith("SWITCHED"):
             logger.info("MonitorProcess: 发现了 Upgrade 并成功切换模型 + 发送 continue. (步骤 C)")
             # 步骤 D: 延迟 2 秒给界面反应时间
@@ -741,7 +780,7 @@ def monitor_process(
                     logger.info("MonitorProcess: reply_event is set mid-flight. Stopping loop naturally.")
                     return
 
-                switch_status = handle_model_switch(templates_dir, reply_event)
+                switch_status = handle_model_switch(templates_dir, reply_event, send_status)
                 if switch_status and switch_status.startswith("SWITCHED"):
                     logger.info("MonitorProcess: 回复途中配额耗尽，已切换模型 + 发送 continue.")
                     time.sleep(2) # 步骤 D 延迟
