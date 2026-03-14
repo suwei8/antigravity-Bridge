@@ -873,9 +873,27 @@ def monitor_process(
         switch_status = handle_model_switch(templates_dir, reply_event, send_status)
         if switch_status and switch_status.startswith("SWITCHED"):
             switched_to = switch_status.split(":", 1)[1] if ":" in switch_status else "未知模型"
-            logger.info(f"MonitorProcess [阶段3]: 配额耗尽，已切换模型至 {switched_to} + 发送 continue。等待 2 秒后回到阶段 1...")
-            time.sleep(2)
-            continue  # 回到阶段 1（等待新模型的 Replying）
+            logger.info(f"MonitorProcess [阶段3]: 配额耗尽，已切换模型至 {switched_to} + 发送 continue。等待 5 秒后复检...")
+            time.sleep(5)
+            
+            # 复检：切换后 Upgrade 弹窗是否仍然存在
+            still_upgrade = False
+            for template in ["Upgrade.png", "Upgrade2.png", "Upgrade3.png"]:
+                res = smart_find_image(os.path.join(templates_dir, template), confidence_levels=[0.8])
+                if res.get('found'):
+                    still_upgrade = True
+                    break
+            
+            if still_upgrade:
+                # 所有模型配额都耗尽了，停止循环
+                logger.warning("MonitorProcess [阶段3]: 切换后仍检测到 Upgrade，所有模型配额已耗尽。退出。")
+                if send_status:
+                    send_status("⚠️ 所有模型配额已耗尽，停止重试。")
+                return
+            else:
+                # 新模型正常工作，继续监控
+                logger.info("MonitorProcess [阶段3]: 切换后 Upgrade 已消失，新模型正常。回到阶段 1...")
+                continue  # 回到阶段 1
         
         # 3b-retry. Upgrade 已发现但切换未完成（面板/目标模型没找到），等待后重试
         if switch_status == "UPGRADE_DETECTED":
