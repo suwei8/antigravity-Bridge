@@ -38,6 +38,7 @@ from telegram.ext import (
 )
 
 from automation.gui_automation import (
+    backup_templates,
     full_workflow,
     full_workflow_media_group,
 )
@@ -106,6 +107,10 @@ class AntigravityBridge:
         logger.info(f"Started. Script: {__file__}, TemplatesDir: {self.templates_dir}, "
                    f"DISPLAY: {os.getenv('DISPLAY', 'not set')}")
         
+        # PyInstaller 二进制模式下，将模板备份到持久化目录
+        # 防止 _MEI* 临时目录被系统清理或多实例竞争时丢失
+        if hasattr(sys, '_MEIPASS'):
+            backup_templates(self.templates_dir)
         # Initialize Telegram bot
         self.updater = Updater(token=token, use_context=True)
         self.bot = self.updater.bot

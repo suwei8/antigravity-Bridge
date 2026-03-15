@@ -8,6 +8,7 @@ Compatible with Ubuntu 20.04 LTS (aarch64) and XFCE desktop environment.
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 from typing import Callable, List, Optional, Tuple
@@ -94,6 +95,80 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Persistent templates directory for PyInstaller binary mode
+_PERSISTENT_TEMPLATES_DIR = None
+_PERSISTENT_DIR_PATH = "/tmp/antigravity_templates"
+
+
+def backup_templates(templates_dir: str) -> bool:
+    """将模板文件备份到持久化目录。在 main.py 启动时调用（仅 PyInstaller 模式）。
+    
+    Args:
+        templates_dir: 原始模板目录路径（通常是 sys._MEIPASS/templates）
+    
+    Returns:
+        True if backup succeeded
+    """
+    global _PERSISTENT_TEMPLATES_DIR
+    try:
+        if os.path.isdir(_PERSISTENT_DIR_PATH):
+            shutil.rmtree(_PERSISTENT_DIR_PATH)
+        shutil.copytree(templates_dir, _PERSISTENT_DIR_PATH)
+        _PERSISTENT_TEMPLATES_DIR = _PERSISTENT_DIR_PATH
+        logger.info(f"模板已备份到持久化目录: {_PERSISTENT_DIR_PATH}")
+        return True
+    except Exception as e:
+        logger.error(f"模板备份失败: {e}")
+        return False
+
+
+def _ensure_templates(templates_dir: str) -> str:
+    """确保模板目录可用。
+    
+    如果原始 templates_dir（_MEI* 临时目录）仍然可用则直接返回，
+    否则回退到持久化备份目录。
+    
+    Args:
+        templates_dir: 原始模板目录路径
+    
+    Returns:
+        可用的模板目录路径
+    """
+    global _PERSISTENT_TEMPLATES_DIR
+    
+    # 快速检查：原始目录中的关键文件存在吗？
+    critical_file = os.path.join(templates_dir, "input_box.png")
+    if os.path.exists(critical_file):
+        return templates_dir
+    
+    # 原始目录已损坏，尝试持久化备份
+    if _PERSISTENT_TEMPLATES_DIR and os.path.isdir(_PERSISTENT_TEMPLATES_DIR):
+        persistent_file = os.path.join(_PERSISTENT_TEMPLATES_DIR, "input_box.png")
+        if os.path.exists(persistent_file):
+            logger.warning(
+                f"原始模板目录已损坏 ({templates_dir})，"
+                f"自动切换到持久化备份: {_PERSISTENT_TEMPLATES_DIR}"
+            )
+            return _PERSISTENT_TEMPLATES_DIR
+    
+    # 检查默认持久化路径（可能由之前的进程创建）
+    if templates_dir != _PERSISTENT_DIR_PATH and os.path.isdir(_PERSISTENT_DIR_PATH):
+        persistent_file = os.path.join(_PERSISTENT_DIR_PATH, "input_box.png")
+        if os.path.exists(persistent_file):
+            _PERSISTENT_TEMPLATES_DIR = _PERSISTENT_DIR_PATH
+            logger.warning(
+                f"原始模板目录已损坏 ({templates_dir})，"
+                f"发现之前的持久化备份: {_PERSISTENT_DIR_PATH}"
+            )
+            return _PERSISTENT_DIR_PATH
+    
+    logger.error(
+        f"模板文件不可用: {critical_file}，且无持久化备份。"
+        f"模板操作将失败。"
+    )
+    return templates_dir
+
 
 # Default confidence levels to try (from high to low)
 DEFAULT_CONFIDENCE_LEVELS = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
@@ -287,6 +362,9 @@ def click_input_box(
     import subprocess
     _ensure_pyautogui()
     
+    # 确保模板目录可用（防止 _MEI 临时目录被清理）
+    templates_dir = _ensure_templates(templates_dir)
+    
     # 1. 尝试激活目标窗口
     activate_window("antigravity")
     
@@ -332,6 +410,7 @@ def find_replying(templates_dir: str, confidence: float = 0.9) -> tuple:
             print(f"找到Replying @ {location}")
     """
     _ensure_pyautogui()
+    templates_dir = _ensure_templates(templates_dir)
     image_path = os.path.join(templates_dir, "Replying.png")
     
     try:
@@ -362,6 +441,7 @@ def click_accept_button(templates_dir: str, confidence: float = 0.7) -> tuple:
     import subprocess
     
     _ensure_pyautogui()
+    templates_dir = _ensure_templates(templates_dir)
     # 尝试查找的模板列表
     templates = ["accept_button.png", "accept_all.png"]
     
@@ -636,6 +716,7 @@ def handle_model_switch(templates_dir: str, reply_event=None, send_status: Optio
     """
     
     _ensure_pyautogui()
+    templates_dir = _ensure_templates(templates_dir)
     # 1. 在整个屏幕上查找 "Upgrade.png" 和 "Upgrade2.png"，"Upgrade3.png"找到任意一个才触发切换
     upgrade_found = False
     for template in ["Upgrade.png", "Upgrade2.png", "Upgrade3.png"]:
@@ -766,6 +847,7 @@ def _check_retry(templates_dir: str) -> bool:
     Returns:
         True 如果找到并点击了 Retry 按钮
     """
+    templates_dir = _ensure_templates(templates_dir)
     retry_img = os.path.join(templates_dir, "Retry.png")
     success, debug_info = find_and_click(retry_img, confidence=0.8, offset=(0, 0))
     if success:
