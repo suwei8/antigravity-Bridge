@@ -358,6 +358,48 @@ logs() {
     tail -f "$LOG_FILE"
 }
 
+switch_mode() {
+    if [ ! -f .env ]; then
+        error "未找到 .env 配置文件，请先执行部署。"
+        return
+    fi
+    
+    echo "=========================================="
+    echo "请选择默认工作模式:"
+    echo "1) GUI - Antigravity 自动化桌面模式 (默认)"
+    echo "2) CLI - 终端命令行代理模式 (例如 Codex CLI)"
+    echo "=========================================="
+    read -p "请输入选项 [1-2]: " mode_choice
+    
+    local new_mode="GUI"
+    if [ "$mode_choice" = "2" ]; then
+        new_mode="CLI"
+        echo "请输入 CLI 启动命令 (默认: codex):"
+        read -r cli_cmd
+        if [ -z "$cli_cmd" ]; then
+            cli_cmd="codex"
+        fi
+        
+        # 尝试获取绝对路径，避免在后台服务运行时找不到命令
+        local full_path=$(which "$cli_cmd" 2>/dev/null)
+        if [ -n "$full_path" ]; then
+            cli_cmd="$full_path"
+            info "已解析命令的绝对路径: $cli_cmd"
+        else
+            info "警告: 未在此环境中找到命令 $cli_cmd 的路径，如果运行失败请考虑输入绝对路径"
+        fi
+        
+        sed -i '/^CLI_COMMAND=/d' .env 2>/dev/null || true
+        echo "CLI_COMMAND=$cli_cmd" >> .env
+    fi
+    
+    sed -i '/^DEFAULT_MODE=/d' .env 2>/dev/null || true
+    echo "DEFAULT_MODE=$new_mode" >> .env
+    
+    info "已将默认工作模式切换为: $new_mode"
+    info "提示: 你需要重启服务才能应用新的默认模式 (也可在 Telegram 中发送 /mode $new_mode 热切换)"
+}
+
 case "$1" in
     deploy)
         deploy
@@ -387,9 +429,10 @@ case "$1" in
         echo "4. 重启 (Restart)"
         echo "5. 查看日志 (Logs)"
         echo "6. 更新 (Update)"
+        echo "7. 切换模式 (Switch Mode)"
         echo "0. 退出 (Exit)"
         echo "=========================================="
-        read -p "请输入选项 [0-6]: " choice
+        read -p "请输入选项 [0-7]: " choice
         
         case "$choice" in
             1) deploy ;;
@@ -398,6 +441,7 @@ case "$1" in
             4) restart ;;
             5) logs ;;
             6) update ;;
+            7) switch_mode ;;
             0) exit 0 ;;
             *) echo "无效选项" ;;
         esac

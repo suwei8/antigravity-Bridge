@@ -42,6 +42,7 @@ from automation.gui_automation import (
     full_workflow,
     full_workflow_media_group,
 )
+from automation.cli_automation import CLIBridge
 from mcp.server import MCPServer
 
 
@@ -75,6 +76,9 @@ class AntigravityBridge:
         self.templates_dir: str = ""
         self.mcp_server: Optional[MCPServer] = None  # MCP Server 引用，用于设置 last_chat_id
         self.ALLOWED_CHAT_IDS: list = []  # 从 .env 读取
+        
+        self.current_mode = "GUI"
+        self.cli_bridge: Optional[CLIBridge] = None
         
     def setup(self) -> bool:
         """Initialize the application."""
@@ -115,11 +119,43 @@ class AntigravityBridge:
         self.updater = Updater(token=token, use_context=True)
         self.bot = self.updater.bot
         
+        # Initialize CLI Bridge
+        self.current_mode = os.getenv("DEFAULT_MODE", "GUI").upper()
+        if self.current_mode not in ("GUI", "CLI"):
+            self.current_mode = "GUI"
+            
+        cli_command = os.getenv("CLI_COMMAND", "codex")
+        
+        def send_telegram_to_last_chat(text: str):
+            chat_id = None
+            if getattr(self, "mcp_server", None) and getattr(self.mcp_server, "last_chat_id", None):
+                chat_id = int(self.mcp_server.last_chat_id)
+            elif getattr(self.mcp_server, "get_last_chat_id", None) and self.mcp_server.get_last_chat_id():
+                 chat_id = int(self.mcp_server.get_last_chat_id())
+            elif self.ALLOWED_CHAT_IDS:
+                chat_id = self.ALLOWED_CHAT_IDS[0]
+                
+            if chat_id:
+                try:
+                    self.bot.send_message(chat_id=chat_id, text=f"💻 [CLI] \n{text}")
+                except Exception as e:
+                    logger.error(f"Failed to send CLI message to Telegram: {e}")
+            else:
+                logger.error("No chat_id available to send CLI message.")
+                
+        self.cli_bridge = CLIBridge(command=cli_command, send_telegram_callback=send_telegram_to_last_chat)
+        if self.current_mode == "CLI":
+            self.cli_bridge.start()
+        
         # Register handlers
         dp = self.updater.dispatcher
         
         # 命令处理器
+        dp.add_handler(CommandHandler('start', self.handle_help_command))
+        dp.add_handler(CommandHandler('help', self.handle_help_command))
         dp.add_handler(CommandHandler('screen', self.handle_screen_command))
+        dp.add_handler(CommandHandler('mode', self.handle_mode_command))
+        dp.add_handler(CommandHandler('cd', self.handle_cd_command))
         
         # 消息处理器
         dp.add_handler(MessageHandler(
@@ -127,7 +163,60 @@ class AntigravityBridge:
             self.handle_message
         ))
         
+        # 注册 Bot 命令菜单（让 Telegram 客户端显示命令提示）
+        try:
+            from telegram import BotCommand
+            commands = [
+                BotCommand("help", "📖 帮助说明"),
+                BotCommand("mode", "🔄 切换模式 (gui/cli)"),
+                BotCommand("cd", "📂 切换 CLI 工作目录"),
+                BotCommand("screen", "📸 截取屏幕"),
+            ]
+            self.bot.set_my_commands(commands)
+            logger.info("Bot commands menu registered.")
+        except Exception as e:
+            logger.warning(f"Failed to set bot commands: {e}")
+        
         return True
+    
+    def handle_help_command(self, update: Update, context: CallbackContext):
+        """处理 /help 和 /start 命令：显示帮助说明"""
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS:
+            return
+        
+        cwd = self.cli_bridge.cwd if self.cli_bridge else "N/A"
+        help_text = (
+            "🌉 *Antigravity\\-Bridge 帮助*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "\n"
+            "🖥️ *GUI 模式* \\(Antigravity IDE\\)\n"
+            "发送文字/图片，Bridge 会自动操控桌面 IDE 进行交互。\n"
+            "适用于：Antigravity IDE 自动化任务。\n"
+            "\n"
+            "⌨️ *CLI 模式* \\(Codex CLI\\)\n"
+            "发送文字，Bridge 调用 Codex CLI 执行你的请求并返回结果。\n"
+            "适用于：代码分析、修复、终端操作等开发任务。\n"
+            "\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "📋 *可用命令*\n"
+            "\n"
+            "/help \\- 显示本帮助信息\n"
+            "/mode \\- 查看当前模式\n"
+            "/mode gui \\- 切换到 GUI 模式\n"
+            "/mode cli \\- 切换到 CLI 模式\n"
+            "/cd \\<路径\\> \\- 切换 CLI 工作目录\n"
+            "/screen \\- 截取并发送桌面截图\n"
+            "\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"📍 当前模式: *{self.current_mode}*\n"
+            f"📂 工作目录: `{cwd}`"
+        )
+        self.bot.send_message(
+            chat_id=chat_id,
+            text=help_text,
+            parse_mode="MarkdownV2"
+        )
     
     def handle_screen_command(self, update: Update, context: CallbackContext):
         """处理 /screen 命令：截取屏幕并发送图片"""
@@ -165,6 +254,49 @@ class AntigravityBridge:
                 chat_id=chat_id,
                 text=f"❌ 截屏失败: {e}"
             )
+
+    def handle_mode_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS:
+            return
+            
+        args = context.args
+        if not args:
+            cwd_info = f"\n📂 工作目录: {self.cli_bridge.cwd}" if self.cli_bridge else ""
+            self.bot.send_message(chat_id=chat_id, text=f"当前模式: {self.current_mode}{cwd_info}\n使用 /mode gui 或 /mode cli 切换。\n使用 /cd <路径> 切换工作目录。")
+            return
+            
+        new_mode = args[0].upper()
+        if new_mode == "GUI":
+            self.current_mode = "GUI"
+            self.bot.send_message(chat_id=chat_id, text="🔄 已切换到 Antigravity GUI 模式")
+        elif new_mode == "CLI":
+            self.current_mode = "CLI"
+            if self.cli_bridge and not self.cli_bridge.running:
+                self.cli_bridge.start()
+            cwd_info = f"\n📂 工作目录: {self.cli_bridge.cwd}" if self.cli_bridge else ""
+            self.bot.send_message(chat_id=chat_id, text=f"🔄 已挂载 Codex CLI 模式{cwd_info}")
+        else:
+            self.bot.send_message(chat_id=chat_id, text="❌ 未知模式。支持: gui, cli")
+    
+    def handle_cd_command(self, update: Update, context: CallbackContext):
+        """处理 /cd 命令：切换 CLI 工作目录"""
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS:
+            return
+            
+        args = context.args
+        if not args:
+            cwd = self.cli_bridge.cwd if self.cli_bridge else "未初始化"
+            self.bot.send_message(chat_id=chat_id, text=f"📂 当前工作目录: {cwd}\n使用 /cd <路径> 切换。")
+            return
+        
+        path = ' '.join(args)  # Support paths with spaces
+        if self.cli_bridge:
+            result = self.cli_bridge.set_cwd(path)
+            self.bot.send_message(chat_id=chat_id, text=result)
+        else:
+            self.bot.send_message(chat_id=chat_id, text="❌ CLI Bridge 未初始化。")
     
     def handle_message(self, update: Update, context: CallbackContext):
         """Buffer incoming messages and process in batches."""
@@ -282,6 +414,26 @@ class AntigravityBridge:
         
         # 统计日志
         logger.info(f"收集完成: {len(image_paths)} 张图片, {len(file_paths)} 个文件, 文字长度={len(full_text)}")
+        
+        if self.current_mode == "CLI":
+            # 仅将纯文本发给 CLI 进程
+            if full_text:
+                self.cli_bridge.send_input(full_text)
+            
+            # CLI 模式下，目前不支持发送图片或文件，简单提示一下
+            if image_paths or file_paths:
+                try:
+                    self.bot.send_message(chat_id=chat_id, text="⚠️ CLI 模式目前暂未启用图片或附件上传支持。")
+                except Exception as e:
+                    logger.error(f"Failed sending warning: {e}")
+                
+            # 清理下载的临时文件，以免堆积
+            for path in image_paths + file_paths:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return
         
         if full_text:
             content_with_context = f"From Telegram: {full_text}\n⬆️ Please always use MCP Tools: antigravity-bridge to reply to this message."
@@ -440,6 +592,8 @@ class AntigravityBridge:
             logger.info("Shutting down...")
             if hasattr(self, 'updater'):
                 self.updater.stop()
+            if hasattr(self, 'cli_bridge') and self.cli_bridge:
+                self.cli_bridge.stop()
 
 
 
