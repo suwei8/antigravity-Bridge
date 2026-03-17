@@ -137,7 +137,14 @@ backup_existing_binary() {
 }
 
 find_app_pids() {
-    ps aux | grep -v grep | awk "/\.\/${APP_NAME}|cd \/.*${APP_NAME}/ {print \$2}" 2>/dev/null
+    local pids
+    pids=$(ps -eo pid,command | grep -E "^ *[0-9]+ +(\./|.*/)?${APP_NAME}( |$)" | grep -v grep | awk '{print $1}')
+    if [ -n "$pids" ]; then
+        echo "$pids"
+        return 0
+    else
+        return 1
+    fi
 }
 
 _validate_display() {
