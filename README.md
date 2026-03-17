@@ -208,13 +208,36 @@ dist/antigravity-bridge
 
 ### 部署到本机
 
+无论当前机器是首次部署，还是已经存在旧版本 `/home/sw/antigravity-bridge`、`/home/sw/manage.sh`，都统一使用下面这组命令：
+
 ```bash
-pkill -9 -f "antigravity-bridge"
-cp -f /home/sw/antigravity-bridge /home/sw/antigravity-bridge.bak.$(date +%Y%m%d-%H%M%S)
-cp -f dist/antigravity-bridge /home/sw/antigravity-bridge
-chmod +x /home/sw/antigravity-bridge
 cd /home/sw
-./manage.sh restart
+if [ -f manage.sh ]; then
+  cp -f manage.sh manage.sh.bak.$(date +%Y%m%d-%H%M%S)
+fi
+curl -fsSL -o manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
+chmod +x manage.sh
+./manage.sh deploy
+./manage.sh start
+```
+
+说明：
+
+- `manage.sh deploy` 会从 `https://github.com/suwei8/antigravity-Bridge` 的 Latest Release 下载二进制 `antigravity-bridge`
+- 如果当前目录已有旧版本 `antigravity-bridge`，脚本会先备份再替换
+- `./manage.sh start` 之前会读取 `.env` 并自动修正 `DISPLAY` / `XAUTHORITY`
+
+如果你刚在本机完成 `pyinstaller` 构建，希望直接替换当前机器上的二进制，可使用：
+
+```bash
+cd /home/sw
+pkill -9 -x antigravity-bridge || true
+if [ -f antigravity-bridge ]; then
+  cp -f antigravity-bridge antigravity-bridge.bak.$(date +%Y%m%d-%H%M%S)
+fi
+cp -f /home/sw/dev_root/antigravity-Bridge/dist/antigravity-bridge /home/sw/antigravity-bridge
+chmod +x /home/sw/antigravity-bridge
+./manage.sh start
 ```
 
 ### 查看部署日志

@@ -4,6 +4,7 @@
 # 功能: 部署、启动、停止、重启、查看日志
 
 APP_NAME="antigravity-bridge"
+LEGACY_APP_NAME="antigravity-bridge-linux-aarch64-ubuntu20.04"
 REPO="suwei8/antigravity-Bridge"
 LOG_FILE="app.log"
 PID_FILE="app.pid"
@@ -23,7 +24,7 @@ error() {
 
 check_dependencies() {
     info "检查系统依赖..."
-    local cmds=("xdotool" "scrot" "xclip" "gnome-screenshot")
+    local cmds=("curl" "xdotool" "scrot" "xclip")
     local pkgs=("python3-tk" "python3-dev")
     local install_needed=0
 
@@ -65,6 +66,43 @@ check_dependencies() {
         sudo apt-get install -y $install_list
     else
         info "所有依赖已安装。"
+    fi
+}
+
+download_release_asset() {
+    local asset_name="$1"
+    local dest_file="$2"
+    local download_url="https://github.com/${REPO}/releases/latest/download/${asset_name}"
+
+    if curl -fsSL --retry 3 --connect-timeout 10 -o "$dest_file" "$download_url"; then
+        return 0
+    fi
+    return 1
+}
+
+download_latest_binary() {
+    local tmp_file="$1"
+
+    info "正在从 GitHub Releases 下载 Latest 二进制..."
+    if download_release_asset "$APP_NAME" "$tmp_file"; then
+        info "已下载标准资产: $APP_NAME"
+        return 0
+    fi
+
+    if download_release_asset "$LEGACY_APP_NAME" "$tmp_file"; then
+        info "已下载兼容资产: $LEGACY_APP_NAME"
+        return 0
+    fi
+
+    error "下载最新版本失败：Latest Release 中既没有 $APP_NAME，也没有 $LEGACY_APP_NAME"
+    return 1
+}
+
+backup_existing_binary() {
+    if [ -f "$APP_NAME" ]; then
+        local backup_file="${APP_NAME}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp -f "$APP_NAME" "$backup_file"
+        info "已备份旧版本到: $backup_file"
     fi
 }
 
@@ -170,13 +208,14 @@ setup_env() {
 deploy() {
     info "开始部署..."
     check_dependencies
-    
-    info "正在下载最新版本..."
+
     local tmp_file="${APP_NAME}.tmp"
-    local download_url="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
-    
-    if wget -O "$tmp_file" "$download_url"; then
+
+    if download_latest_binary "$tmp_file"; then
         chmod +x "$tmp_file"
+        info "正在停止旧版本进程..."
+        stop
+        backup_existing_binary
         mv -f "$tmp_file" "$APP_NAME"
         info "下载成功并通过验证。"
         
@@ -248,6 +287,7 @@ EOF
         info "部署完成！可以使用 'bash $0 start' 启动。"
     else
         error "下载失败，请检查网络或版本是否存在。"
+        rm -f "$tmp_file"
     fi
 }
 
@@ -255,21 +295,19 @@ update() {
     info "开始更新到最新版本..."
     check_dependencies
 
-    # 直接下载最新二进制文件
-    info "正在下载最新版本二进制..."
     local tmp_file="${APP_NAME}.tmp"
-    local download_url="https://github.com/${REPO}/releases/latest/download/${APP_NAME}"
-    
-    if wget -O "$tmp_file" "$download_url"; then
+
+    if download_latest_binary "$tmp_file"; then
         chmod +x "$tmp_file"
-        
+
         info "正在停止当前服务..."
         stop
         sleep 2
-        
+
         info "替换可执行文件..."
+        backup_existing_binary
         mv -f "$tmp_file" "$APP_NAME"
-        
+
         info "更新成功，正在启动服务..."
         start
     else
@@ -285,6 +323,16 @@ start() {
             return
         else
             rm "$PID_FILE"
+        fi
+    fi
+
+    if pgrep -x "$APP_NAME" > /dev/null; then
+        info "检测到残留的旧版本进程，正在强制清理..."
+        pkill -9 -x "$APP_NAME" 2>/dev/null
+        sleep 1
+        if pgrep -x "$APP_NAME" > /dev/null; then
+            error "仍有旧版本进程存活，请先手动清理后再启动"
+            return
         fi
     fi
 
@@ -331,12 +379,12 @@ stop() {
         rm -f "$PID_FILE"
     fi
     
-    # 强制清理所有 antigravity-bridge 进程（包括 IDE 后台启动的）
-    pkill -9 -f "antigravity-bridge" 2>/dev/null
+    # 强制清理残留的主程序进程
+    pkill -9 -x "$APP_NAME" 2>/dev/null
     sleep 1
-    
+
     # 再次检查
-    if pgrep -f "antigravity-bridge" > /dev/null; then
+    if pgrep -x "$APP_NAME" > /dev/null; then
         error "警告：仍有进程未能正常退出，请手动检查"
     else
         info "程序已停止。"
