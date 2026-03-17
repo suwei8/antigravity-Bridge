@@ -136,6 +136,10 @@ backup_existing_binary() {
     fi
 }
 
+find_app_pids() {
+    ps aux | grep -v grep | awk "/\.\/${APP_NAME}|cd \/.*${APP_NAME}/ {print \$2}" 2>/dev/null
+}
+
 _validate_display() {
     # 验证给定的 DISPLAY 是否可连通
     # 返回 0 表示可用，1 表示不可用
@@ -358,11 +362,11 @@ start() {
         fi
     fi
 
-    if pgrep -x "$APP_NAME" > /dev/null; then
+    if find_app_pids > /dev/null; then
         info "检测到残留的旧版本进程，正在强制清理..."
-        pkill -9 -x "$APP_NAME" 2>/dev/null
+        find_app_pids | xargs -r kill -9 2>/dev/null
         sleep 1
-        if pgrep -x "$APP_NAME" > /dev/null; then
+        if find_app_pids > /dev/null; then
             error "仍有旧版本进程存活，请先手动清理后再启动"
             return
         fi
@@ -417,11 +421,11 @@ stop() {
     fi
     
     # 强制清理残留的主程序进程
-    pkill -9 -x "$APP_NAME" 2>/dev/null
+    find_app_pids | xargs -r kill -9 2>/dev/null
     sleep 1
 
     # 再次检查
-    if pgrep -x "$APP_NAME" > /dev/null; then
+    if find_app_pids > /dev/null; then
         error "警告：仍有进程未能正常退出，请手动检查"
     else
         info "程序已停止。"

@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from PIL import Image, UnidentifiedImageError
+
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -666,10 +668,13 @@ class CLIBridge:
     def _execute_prompt(self, chat_id: int, prompt: str, staged_images: List[Path], staged_files: List[Path]):
         state = self._get_chat_state(chat_id)
         prompt_text = self._build_prompt(prompt, staged_files)
+        if not prompt_text.strip():
+            # Image-only Telegram messages still need a non-empty stdin prompt.
+            prompt_text = "请查看附带的图片或文件，并根据其中内容继续处理。"
         preview = prompt.strip().replace("\n", " ")[:80] or "(空提示词)"
         output_file = tempfile.NamedTemporaryFile(prefix="codex_last_", suffix=".txt", delete=False).name
 
-        command = self._build_exec_args(state, prompt_text, staged_images, output_file)
+        command = self._build_exec_args(state, staged_images, output_file)
         job = JobState(
             chat_id=chat_id,
             prompt_preview=preview,
@@ -698,12 +703,15 @@ class CLIBridge:
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 text=True,
                 bufsize=1,
                 cwd=os.path.expanduser("~"),
                 env={**os.environ, "TERM": "dumb", "NO_COLOR": "1"},
             )
+            if process.stdin is not None:
+                process.stdin.write(prompt_text)
+                process.stdin.close()
             job.process = process
             with self.lock:
                 self.active_job = job
@@ -752,7 +760,6 @@ class CLIBridge:
     def _build_exec_args(
         self,
         state: ChatState,
-        prompt: str,
         image_paths: List[Path],
         output_file: str,
     ) -> List[str]:
@@ -776,9 +783,10 @@ class CLIBridge:
             command.extend(["--image", str(image_path)])
 
         if state.current_session_id:
-            command.extend([state.current_session_id, prompt])
+            # Use stdin for the prompt so `--image` cannot consume it as a variadic arg.
+            command.extend(["--", state.current_session_id, "-"])
         else:
-            command.append(prompt)
+            command.extend(["--", "-"])
 
         return command
 
@@ -880,12 +888,21 @@ class CLIBridge:
             except Exception as e:
                 logger.error("Failed to stage upload %s: %s", source, e)
                 continue
-            if dest.suffix.lower() in IMAGE_EXTENSIONS:
+            if dest.suffix.lower() in IMAGE_EXTENSIONS and self._is_valid_image(dest):
                 staged_images.append(dest)
             else:
                 staged_files.append(dest)
 
         return staged_images, staged_files
+
+    def _is_valid_image(self, path: Path) -> bool:
+        try:
+            with Image.open(path) as img:
+                img.verify()
+            return True
+        except (OSError, UnidentifiedImageError) as e:
+            logger.warning("Invalid image upload %s: %s", path, e)
+            return False
 
     def _build_prompt(self, user_prompt: str, staged_files: List[Path]) -> str:
         prompt = self._expand_at_files(user_prompt)
