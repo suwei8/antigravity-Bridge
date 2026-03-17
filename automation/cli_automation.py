@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -861,7 +861,7 @@ class CLIBridge:
         chat_id: int,
         image_paths: List[str],
         file_paths: List[str],
-    ) -> tuple[List[Path], List[Path]]:
+    ) -> Tuple[List[Path], List[Path]]:
         upload_root = Path(self.cwd) / ".antigravity-bridge" / "uploads" / str(chat_id)
         upload_root.mkdir(parents=True, exist_ok=True)
 
