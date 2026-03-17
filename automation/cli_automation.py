@@ -61,16 +61,10 @@ class CLIBridge:
         
     def _execute_prompt(self, prompt: str):
         """Execute a single prompt via codex exec and send output to Telegram."""
-        # Build command: codex exec "prompt" --full-auto
-        cmd = [
-            self.base_command,
-            "exec",
-            prompt,
-            "--full-auto",
-        ]
+        # Build command string for shell execution
         # Use -C to set working directory for codex
         cd_flag = f' -C {repr(self.cwd)}' if self.cwd else ''
-        cmd_str = f'{self.base_command} exec {repr(prompt)} --full-auto --skip-git-repo-check{cd_flag}'
+        cmd_str = f'{self.base_command} exec {repr(prompt)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check{cd_flag}'
         
         logger.info(f"CLI exec: {cmd_str}")
         
