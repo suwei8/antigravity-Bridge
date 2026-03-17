@@ -29,6 +29,7 @@ try:
 except ImportError:
     load_dotenv = None
 from telegram import Bot, Message, Update
+from telegram.utils.helpers import escape_markdown
 from telegram.ext import (
     CallbackContext,
     CommandHandler,
@@ -55,6 +56,8 @@ logging.basicConfig(
         logging.FileHandler(log_file),
         logging.StreamHandler(sys.stderr),
     ]
+    ,
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,7 @@ class AntigravityBridge:
         
         self.current_mode = "GUI"
         self.cli_bridge: Optional[CLIBridge] = None
+        self._shutting_down = False
         
     def setup(self) -> bool:
         """Initialize the application."""
@@ -126,15 +130,7 @@ class AntigravityBridge:
             
         cli_command = os.getenv("CLI_COMMAND", "codex")
         
-        def send_telegram_to_last_chat(text: str):
-            chat_id = None
-            if getattr(self, "mcp_server", None) and getattr(self.mcp_server, "last_chat_id", None):
-                chat_id = int(self.mcp_server.last_chat_id)
-            elif getattr(self.mcp_server, "get_last_chat_id", None) and self.mcp_server.get_last_chat_id():
-                 chat_id = int(self.mcp_server.get_last_chat_id())
-            elif self.ALLOWED_CHAT_IDS:
-                chat_id = self.ALLOWED_CHAT_IDS[0]
-                
+        def send_telegram_to_chat(chat_id: int, text: str):
             if chat_id:
                 try:
                     self.bot.send_message(chat_id=chat_id, text=f"💻 [CLI] \n{text}")
@@ -143,7 +139,7 @@ class AntigravityBridge:
             else:
                 logger.error("No chat_id available to send CLI message.")
                 
-        self.cli_bridge = CLIBridge(command=cli_command, send_telegram_callback=send_telegram_to_last_chat)
+        self.cli_bridge = CLIBridge(command=cli_command, send_telegram_callback=send_telegram_to_chat)
         if self.current_mode == "CLI":
             self.cli_bridge.start()
         
@@ -156,6 +152,29 @@ class AntigravityBridge:
         dp.add_handler(CommandHandler('screen', self.handle_screen_command))
         dp.add_handler(CommandHandler('mode', self.handle_mode_command))
         dp.add_handler(CommandHandler('cd', self.handle_cd_command))
+        dp.add_handler(CommandHandler('status', self.handle_status_command))
+        dp.add_handler(CommandHandler('cancel', self.handle_cancel_command))
+        dp.add_handler(CommandHandler('exit', self.handle_exit_command))
+        dp.add_handler(CommandHandler('sessions', self.handle_sessions_command))
+        dp.add_handler(CommandHandler('resume', self.handle_resume_command))
+        dp.add_handler(CommandHandler('last', self.handle_last_command))
+        dp.add_handler(CommandHandler('new', self.handle_new_command))
+        dp.add_handler(CommandHandler('session', self.handle_session_command))
+        dp.add_handler(CommandHandler('save', self.handle_save_command))
+        dp.add_handler(CommandHandler('pwd', self.handle_pwd_command))
+        dp.add_handler(CommandHandler('files', self.handle_files_command))
+        dp.add_handler(CommandHandler('ls', self.handle_ls_command))
+        dp.add_handler(CommandHandler('cat', self.handle_cat_command))
+        dp.add_handler(CommandHandler('repeat', self.handle_repeat_command))
+        dp.add_handler(CommandHandler('search', self.handle_search_command))
+        dp.add_handler(CommandHandler('tail', self.handle_tail_command))
+        dp.add_handler(CommandHandler('run', self.handle_run_command))
+        dp.add_handler(CommandHandler('diff', self.handle_diff_command))
+        dp.add_handler(CommandHandler('tree', self.handle_tree_command))
+        dp.add_handler(CommandHandler('open', self.handle_open_command))
+        dp.add_handler(CommandHandler('gitstatus', self.handle_gitstatus_command))
+        dp.add_handler(CommandHandler('history', self.handle_history_command))
+        dp.add_handler(CommandHandler('model', self.handle_model_command))
         
         # 消息处理器
         dp.add_handler(MessageHandler(
@@ -170,6 +189,29 @@ class AntigravityBridge:
                 BotCommand("help", "📖 帮助说明"),
                 BotCommand("mode", "🔄 切换模式 (gui/cli)"),
                 BotCommand("cd", "📂 切换 CLI 工作目录"),
+                BotCommand("status", "📊 查看 CLI 状态"),
+                BotCommand("cancel", "🛑 终止当前 CLI 任务"),
+                BotCommand("exit", "🛑 退出当前任务"),
+                BotCommand("sessions", "🗂️ 查看最近会话"),
+                BotCommand("resume", "🔁 绑定会话继续"),
+                BotCommand("last", "⏮️ 绑定最近会话"),
+                BotCommand("new", "🆕 发起新会话"),
+                BotCommand("session", "🧠 查看当前会话"),
+                BotCommand("save", "💾 查看会话保存状态"),
+                BotCommand("pwd", "📂 查看当前目录"),
+                BotCommand("files", "📎 查看最近上传文件"),
+                BotCommand("ls", "📁 查看目录"),
+                BotCommand("cat", "📄 查看文件内容"),
+                BotCommand("repeat", "🔁 重复上一条提示词"),
+                BotCommand("search", "🔎 搜索文本"),
+                BotCommand("tail", "📜 查看文件尾部"),
+                BotCommand("run", "🖥️ 运行一条命令"),
+                BotCommand("diff", "🧾 查看变更"),
+                BotCommand("tree", "🌳 查看目录树"),
+                BotCommand("open", "📂 打开路径摘要"),
+                BotCommand("gitstatus", "🌿 查看 Git 状态"),
+                BotCommand("history", "🕘 查看提示词历史"),
+                BotCommand("model", "🤖 设置 CLI 模型"),
                 BotCommand("screen", "📸 截取屏幕"),
             ]
             self.bot.set_my_commands(commands)
@@ -178,6 +220,14 @@ class AntigravityBridge:
             logger.warning(f"Failed to set bot commands: {e}")
         
         return True
+
+    def _send_html_message(self, chat_id: int, text: str):
+        self.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     
     def handle_help_command(self, update: Update, context: CallbackContext):
         """处理 /help 和 /start 命令：显示帮助说明"""
@@ -187,34 +237,53 @@ class AntigravityBridge:
         
         cwd = self.cli_bridge.cwd if self.cli_bridge else "N/A"
         help_text = (
-            "🌉 *Antigravity\\-Bridge 帮助*\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "\n"
-            "🖥️ *GUI 模式* \\(Antigravity IDE\\)\n"
+            "Antigravity-Bridge 帮助\n"
+            "====================\n\n"
+            "GUI 模式 (Antigravity IDE)\n"
             "发送文字/图片，Bridge 会自动操控桌面 IDE 进行交互。\n"
-            "适用于：Antigravity IDE 自动化任务。\n"
-            "\n"
-            "⌨️ *CLI 模式* \\(Codex CLI\\)\n"
+            "适用于：Antigravity IDE 自动化任务。\n\n"
+            "CLI 模式 (Codex CLI)\n"
             "发送文字，Bridge 调用 Codex CLI 执行你的请求并返回结果。\n"
-            "适用于：代码分析、修复、终端操作等开发任务。\n"
-            "\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "📋 *可用命令*\n"
-            "\n"
-            "/help \\- 显示本帮助信息\n"
-            "/mode \\- 查看当前模式\n"
-            "/mode gui \\- 切换到 GUI 模式\n"
-            "/mode cli \\- 切换到 CLI 模式\n"
-            "/cd \\<路径\\> \\- 切换 CLI 工作目录\n"
-            "/screen \\- 截取并发送桌面截图\n"
-            "\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            f"📍 当前模式: *{self.current_mode}*\n"
-            f"📂 工作目录: `{cwd}`"
+            "支持心跳、会话恢复、模型切换、图片输入、@文件展开。\n"
+            "适用于：代码分析、修复、终端操作等开发任务。\n\n"
+            "可用命令\n"
+            "/help - 显示本帮助信息\n"
+            "/mode - 查看当前模式\n"
+            "/mode gui - 切换到 GUI 模式\n"
+            "/mode cli - 切换到 CLI 模式\n"
+            "/cd <路径> - 切换 CLI 工作目录\n"
+            "/status - 查看 CLI 当前状态\n"
+            "/cancel - 终止当前 CLI 任务\n"
+            "/exit - 终止当前 CLI 任务\n"
+            "/sessions - 查看最近会话\n"
+            "/resume <session_id|last> - 绑定会话继续\n"
+            "/last - 绑定最近会话\n"
+            "/resume new - 清空当前会话绑定\n"
+            "/new - 发起新的 CLI 会话\n"
+            "/session - 查看当前会话\n"
+            "/save - 查看当前会话保存状态\n"
+            "/pwd - 查看当前目录\n"
+            "/files - 查看最近上传文件\n"
+            "/ls [路径] - 查看目录\n"
+            "/cat <文件> - 查看文件内容\n"
+            "/repeat - 重复上一条提示词\n"
+            "/search <pattern> - 搜索文本\n"
+            "/tail <文件> - 查看文件尾部\n"
+            "/run <命令> - 运行一条 shell 命令\n"
+            "/diff [路径] - 查看 Git 变更\n"
+            "/tree [路径] - 查看目录树\n"
+            "/open <路径> - 查看路径摘要\n"
+            "/gitstatus [路径] - 查看 Git 状态\n"
+            "/history - 查看最近提示词历史\n"
+            "/model <name> - 设置 CLI 模型\n"
+            "/model default - 恢复默认模型\n"
+            "/screen - 截取并发送桌面截图\n\n"
+            f"当前模式: {self.current_mode}\n"
+            f"工作目录: {cwd}"
         )
         self.bot.send_message(
             chat_id=chat_id,
-            text=help_text,
+            text=escape_markdown(help_text, version=2),
             parse_mode="MarkdownV2"
         )
     
@@ -297,6 +366,199 @@ class AntigravityBridge:
             self.bot.send_message(chat_id=chat_id, text=result)
         else:
             self.bot.send_message(chat_id=chat_id, text="❌ CLI Bridge 未初始化。")
+
+    def handle_status_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.get_status(chat_id))
+
+    def handle_cancel_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.cancel_active())
+
+    def handle_exit_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.cancel_active())
+
+    def handle_sessions_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.format_sessions(chat_id))
+
+    def handle_new_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.clear_session(chat_id))
+
+    def handle_session_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self._send_html_message(chat_id, self.cli_bridge.get_session_info(chat_id))
+
+    def handle_save_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self._send_html_message(chat_id, self.cli_bridge.get_save_status(chat_id))
+
+    def handle_pwd_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self._send_html_message(chat_id, self.cli_bridge.get_pwd_info(chat_id))
+
+    def handle_files_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self._send_html_message(chat_id, self.cli_bridge.format_recent_uploads(chat_id))
+
+    def handle_ls_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        path = " ".join(context.args).strip() if context.args else "."
+        self._send_html_message(chat_id, self.cli_bridge.list_directory(path))
+
+    def handle_cat_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        if not context.args:
+            self.bot.send_message(chat_id=chat_id, text="用法: /cat <文件路径>")
+            return
+        path = " ".join(context.args).strip()
+        self._send_html_message(chat_id, self.cli_bridge.read_file_preview(path))
+
+    def handle_repeat_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        last_prompt = self.cli_bridge.get_last_prompt(chat_id)
+        if not last_prompt:
+            self.bot.send_message(chat_id=chat_id, text="ℹ️ 当前还没有可重复的上一条提示词。")
+            return
+        self.bot.send_message(chat_id=chat_id, text="🔁 正在重复上一条提示词。")
+        self.cli_bridge.send_input(chat_id=chat_id, text=last_prompt)
+
+    def handle_search_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        if not context.args:
+            self.bot.send_message(chat_id=chat_id, text="用法: /search <pattern> [路径]")
+            return
+        args = context.args
+        pattern = args[0]
+        path = " ".join(args[1:]).strip() if len(args) > 1 else None
+        self._send_html_message(chat_id, self.cli_bridge.search_in_workspace(pattern, path))
+
+    def handle_tail_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        if not context.args:
+            self.bot.send_message(chat_id=chat_id, text="用法: /tail <文件路径>")
+            return
+        path = " ".join(context.args).strip()
+        self._send_html_message(chat_id, self.cli_bridge.tail_file(path))
+
+    def handle_run_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        if not context.args:
+            self.bot.send_message(chat_id=chat_id, text="用法: /run <shell command>")
+            return
+        command = " ".join(context.args).strip()
+        self._send_html_message(chat_id, self.cli_bridge.run_shell_command(command))
+
+    def handle_diff_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        path = " ".join(context.args).strip() if context.args else None
+        self._send_html_message(chat_id, self.cli_bridge.diff_workspace(path))
+
+    def handle_tree_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        path = " ".join(context.args).strip() if context.args else "."
+        self._send_html_message(chat_id, self.cli_bridge.tree_directory(path))
+
+    def handle_open_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        if not context.args:
+            self.bot.send_message(chat_id=chat_id, text="用法: /open <路径>")
+            return
+        path = " ".join(context.args).strip()
+        self._send_html_message(chat_id, self.cli_bridge.open_path_info(path))
+
+    def handle_gitstatus_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        path = " ".join(context.args).strip() if context.args else None
+        self._send_html_message(chat_id, self.cli_bridge.git_status(path))
+
+    def handle_history_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self._send_html_message(chat_id, self.cli_bridge.get_prompt_history(chat_id))
+
+    def handle_resume_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+
+        args = context.args
+        if not args:
+            self.bot.send_message(
+                chat_id=chat_id,
+                text="用法: /resume <session_id|last|new>\n例如: /resume last",
+            )
+            return
+
+        session_ref = " ".join(args).strip()
+        if session_ref.lower() == "new":
+            result = self.cli_bridge.clear_session(chat_id)
+        else:
+            result = self.cli_bridge.resume_session(chat_id, session_ref)
+        self.bot.send_message(chat_id=chat_id, text=result)
+
+    def handle_last_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.resume_session(chat_id, "last"))
+
+    def handle_model_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+
+        args = context.args
+        if not args:
+            self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.get_status(chat_id))
+            return
+
+        model_name = " ".join(args).strip()
+        if model_name.lower() in ("default", "auto", "clear", "none"):
+            model_name = ""
+        result = self.cli_bridge.set_model(chat_id, model_name)
+        self.bot.send_message(chat_id=chat_id, text=result)
     
     def handle_message(self, update: Update, context: CallbackContext):
         """Buffer incoming messages and process in batches."""
@@ -416,18 +678,14 @@ class AntigravityBridge:
         logger.info(f"收集完成: {len(image_paths)} 张图片, {len(file_paths)} 个文件, 文字长度={len(full_text)}")
         
         if self.current_mode == "CLI":
-            # 仅将纯文本发给 CLI 进程
-            if full_text:
-                self.cli_bridge.send_input(full_text)
-            
-            # CLI 模式下，目前不支持发送图片或文件，简单提示一下
-            if image_paths or file_paths:
-                try:
-                    self.bot.send_message(chat_id=chat_id, text="⚠️ CLI 模式目前暂未启用图片或附件上传支持。")
-                except Exception as e:
-                    logger.error(f"Failed sending warning: {e}")
-                
-            # 清理下载的临时文件，以免堆积
+            if full_text or image_paths or file_paths:
+                self.cli_bridge.send_input(
+                    chat_id=chat_id,
+                    text=full_text,
+                    image_paths=image_paths,
+                    file_paths=file_paths,
+                )
+
             for path in image_paths + file_paths:
                 try:
                     os.remove(path)
@@ -589,11 +847,29 @@ class AntigravityBridge:
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt received.")
         finally:
-            logger.info("Shutting down...")
-            if hasattr(self, 'updater'):
+            self._shutdown()
+
+    def _shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        logger.info("Shutting down...")
+
+        if hasattr(self, 'updater'):
+            try:
                 self.updater.stop()
-            if hasattr(self, 'cli_bridge') and self.cli_bridge:
+            except KeyboardInterrupt:
+                logger.warning("Interrupted while stopping updater; continuing shutdown.")
+            except Exception as e:
+                logger.error(f"Error while stopping updater: {e}")
+
+        if hasattr(self, 'cli_bridge') and self.cli_bridge:
+            try:
                 self.cli_bridge.stop()
+            except KeyboardInterrupt:
+                logger.warning("Interrupted while stopping CLI bridge; continuing shutdown.")
+            except Exception as e:
+                logger.error(f"Error while stopping CLI bridge: {e}")
 
 
 

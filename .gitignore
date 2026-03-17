@@ -33,6 +33,7 @@ antigravity-bridge
 dist/
 build/
 *.spec
+!antigravity-bridge.spec
 
 # Screenshots
 .screenshot*.png
