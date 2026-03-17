@@ -153,7 +153,7 @@ _validate_display() {
     if [ -z "$test_display" ]; then
         return 1
     fi
-    DISPLAY="$test_display" xdpyinfo >/dev/null 2>&1
+    DISPLAY="$test_display" timeout 2 xdpyinfo >/dev/null 2>&1
     return $?
 }
 
