@@ -8,6 +8,7 @@ LEGACY_APP_NAME="antigravity-bridge-linux-aarch64-ubuntu20.04"
 REPO="suwei8/antigravity-Bridge"
 LOG_FILE="app.log"
 PID_FILE="app.pid"
+RELEASE_TAG_FILE=".antigravity-release-tag"
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -80,17 +81,46 @@ download_release_asset() {
     return 1
 }
 
+get_latest_release_tag() {
+    curl -fsSLI --retry 3 --connect-timeout 10 "https://github.com/${REPO}/releases/latest" 2>/dev/null \
+        | tr -d '\r' \
+        | awk '
+            BEGIN { IGNORECASE = 1 }
+            /^location:/ && /\/releases\/tag\// {
+                sub(/^.*\/releases\/tag\//, "", $0)
+                print $0
+            }
+        ' \
+        | tail -n 1
+}
+
+get_local_release_tag() {
+    if [ -f "$RELEASE_TAG_FILE" ]; then
+        cat "$RELEASE_TAG_FILE"
+    fi
+}
+
 download_latest_binary() {
     local tmp_file="$1"
+    local latest_tag=""
+
+    latest_tag=$(get_latest_release_tag)
+    if [ -n "$latest_tag" ]; then
+        info "Latest Release tag: $latest_tag"
+    else
+        info "Latest Release tag: 未解析到，继续按 Latest 链接下载"
+    fi
 
     info "正在从 GitHub Releases 下载 Latest 二进制..."
     if download_release_asset "$APP_NAME" "$tmp_file"; then
-        info "已下载标准资产: $APP_NAME"
+        info "已下载标准资产: $APP_NAME${latest_tag:+ (tag: $latest_tag)}"
+        printf '%s\n' "${latest_tag:-unknown}" > "$RELEASE_TAG_FILE"
         return 0
     fi
 
     if download_release_asset "$LEGACY_APP_NAME" "$tmp_file"; then
-        info "已下载兼容资产: $LEGACY_APP_NAME"
+        info "已下载兼容资产: $LEGACY_APP_NAME${latest_tag:+ (tag: $latest_tag)}"
+        printf '%s\n' "${latest_tag:-unknown}" > "$RELEASE_TAG_FILE"
         return 0
     fi
 
@@ -317,6 +347,8 @@ update() {
 }
 
 start() {
+    local local_tag=""
+
     if [ -f "$PID_FILE" ]; then
         if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
             error "程序已在运行中 (PID: $(cat $PID_FILE))"
@@ -353,6 +385,11 @@ start() {
 
     # 再次检测并覆盖环境变量（防止 .env 中的值过时或缺失）
     setup_env
+
+    local_tag=$(get_local_release_tag)
+    if [ -n "$local_tag" ]; then
+        info "准备启动版本 tag: $local_tag"
+    fi
 
     info "正在启动 $APP_NAME..."
     nohup ./$APP_NAME > "$LOG_FILE" 2>&1 &
