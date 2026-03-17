@@ -1,191 +1,272 @@
 # Antigravity-Bridge
 
-Telegram Bot 桥接到 IDE GUI 的自动化工具，支持 MCP (Model Context Protocol) 集成，让 AI 助手通过 Telegram 与你无缝交互。
+Antigravity-Bridge 是一个 Telegram Bot 桥接器，支持两条工作链路：
 
-## 功能特性
+- `GUI` 模式：通过桌面自动化驱动本地 IDE / AI 客户端。
+- `CLI` 模式：通过 Codex CLI 执行代码、终端和文件相关任务。
 
-### 核心功能
-- **Telegram Bot** — 接收用户消息（文字、图片、文档），支持批量缓冲和分组处理
-- **GUI 自动化** — 使用图像匹配（PyAutoGUI）在桌面上自动操作 IDE，包括输入文本、粘贴图片、点击按钮
-- **MCP Server** — 通过 stdio 与 IDE 通信，暴露 `reply_to_telegram` 工具供 AI 助手直接回复消息
-- **多图消息支持** — 支持图片 + 文字的组合消息，自动转换非 PNG 图片确保剪贴板兼容
-- **文件传输** — 支持接收文档文件（txt, pdf 等），并传递给 IDE
+项目同时带有 MCP Server，方便 IDE 内的 Agent 直接把最终回复回传到 Telegram。
 
-### 后台监控
-- **Retry 自动恢复** — 持续监控 IDE 网络断连时的 Retry 按钮并自动点击恢复
-- **配额自动切换** — 检测 Upgrade/配额耗尽弹窗，自动切换备用 AI 模型并发送 continue 指令
-- **思考中心跳** — 在 AI 回复过程中自动发送「思考中...」状态通知到 Telegram
-- **Accept 自动点击** — 自动点击 IDE 中的 Accept/Accept all 按钮
+当前项目的主要使用场景已经转向 `CLI` 模式，目标是在不坐在电脑前时，也能通过 Telegram Bot 持续使用 Codex CLI。
 
-### 命令支持
-- `/screen` — 截取当前屏幕截图并发送到 Telegram
+## 当前状态
 
-## 系统要求
+当前源码已经包含以下能力：
 
-- Ubuntu 20.04 LTS (aarch64)
-- Python 3.8+
-- X11 桌面环境 (XFCE)
-- 必要的系统包：`xdotool`, `scrot`, `xclip`, `python3-tk`, `python3-dev`
+- Telegram 文本、图片、文件输入
+- `CLI` 长任务心跳
+- Codex 会话恢复与会话列表
+- 模型切换
+- `@文件` 展开读取
+- Telegram 侧目录、文件、搜索、Git、shell 辅助命令
+- 更适合 Telegram 阅读的 HTML 输出
+- 多仓库工作目录下更友好的 `/tree`、`/cat`、`/diff`、`/gitstatus`
 
-## 二进制版本一键部署
+## 运行模式
 
-项目提供了 `manage.sh` 脚本，用于自动从 GitHub Release 下载最新的二进制版本并进行管理。
+### GUI 模式
 
-### 1. 下载管理脚本
+适合桌面 AI 客户端自动化：
+
+- 图像识别输入框、按钮和面板
+- 自动点击 `Retry` / `Accept`
+- 截图、图片粘贴、GUI 心跳
+
+### CLI 模式
+
+适合远程开发与代码任务：
+
+- 使用 `codex exec --json`
+- 支持心跳消息
+- 支持 `resume` 续接本地会话
+- 支持 Telegram 图片传给 Codex `--image`
+- 支持 Telegram 文件落盘并内联到提示词
+- 支持 `YOLO` 执行模式
+
+## Telegram 命令
+
+### 通用命令
+
+- `/help`
+- `/mode`
+- `/mode gui`
+- `/mode cli`
+- `/screen`
+
+### CLI 会话命令
+
+- `/cd <路径>`
+- `/status`
+- `/cancel`
+- `/exit`
+- `/sessions`
+- `/resume <session_id|last>`
+- `/last`
+- `/new`
+- `/session`
+- `/save`
+- `/model <name>`
+- `/model default`
+
+### CLI 工作区命令
+
+- `/pwd`
+- `/files`
+- `/ls [路径]`
+- `/tree [路径]`
+- `/open <路径>`
+- `/cat <文件>`
+- `/tail <文件>`
+- `/search <pattern> [路径]`
+- `/run <shell command>`
+- `/diff [路径]`
+- `/gitstatus [路径]`
+- `/history`
+- `/repeat`
+
+## 环境要求
+
+推荐正式维护、构建和发布环境：
+
+- Oracle Cloud ARM
+- `VM.Standard.A1.Flex`
+- `Ubuntu 20.04.6 LTS (aarch64)`
+
+运行兼容目标：
+
+- Ubuntu 20.04.6 LTS (aarch64)
+- Ubuntu 22.04.5 LTS (aarch64)
+- Ubuntu 24.04.3 LTS (aarch64)
+
+之所以固定在 Ubuntu 20.04 ARM 上构建，是为了避免高版本系统构建出的二进制依赖更新的 `glibc`，导致在 Ubuntu 20.04 上运行失败。
+
+## 系统依赖
+
+### 必要系统包
 
 ```bash
-wget -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
-chmod +x manage.sh
+sudo apt update
+sudo apt install -y \
+  xdotool \
+  scrot \
+  xclip \
+  python3-venv \
+  python3-pip \
+  python3-tk \
+  python3-dev \
+  build-essential
 ```
 
-### 2. 部署
+### Codex CLI
+
+项目的 `CLI` 模式依赖本机安装 Codex CLI。
+
+示例：
 
 ```bash
-./manage.sh deploy
-```
-
-首次部署会：
-- 自动检查并安装系统依赖
-- 从 GitHub Releases 下载最新二进制
-- 创建 `.env` 配置文件（需要输入 Telegram Bot Token）
-- 自动配置 MCP 和 GEMINI 规则
-
-### 3. 服务管理
-
-| 命令 | 说明 |
-|------|------|
-| `./manage.sh start` | 启动服务 |
-| `./manage.sh stop` | 停止服务 |
-| `./manage.sh restart` | 重启服务 |
-| `./manage.sh update` | 更新到最新版本 |
-| `./manage.sh logs` | 查看实时日志 |
-
-### 4. 手动更新
-
-```bash
-# 杀掉正在运行的老服务
-pkill -9 -f "antigravity-bridge"
-sleep 2
-wget -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
-chmod +x /tmp/antigravity-bridge
-mv /tmp/antigravity-bridge ./antigravity-bridge
-chmod +x ./antigravity-bridge
-# 重启
-cd /home/sw/
-./manage.sh restart
+codex --version
 ```
 
 ## 源码开发
 
-### 安装
+### 1. 创建虚拟环境
 
 ```bash
-# 安装系统依赖
-sudo apt install xdotool scrot xclip python3-tk python3-dev
-
-# 创建虚拟环境
 python3 -m venv venv
 source venv/bin/activate
-
-# 安装 Python 依赖
 pip install -r requirements.txt
+pip install pyinstaller
 ```
 
-### 配置
+### 2. 配置 `.env`
 
-创建 `.env` 文件：
+示例：
 
 ```env
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=111111111,222222222
+
+DEFAULT_MODE=CLI
+CLI_COMMAND=/home/sw/.nvm/versions/node/v24.14.0/bin/codex
+CLI_EXEC_MODE=YOLO
+CLI_HEARTBEAT_SECONDS=15
+CLI_CWD=/home/sw/dev_root/
+
+DISPLAY=:10
+XAUTHORITY=/home/sw/.Xauthority
 ```
 
-### 运行
+说明：
+
+- `DEFAULT_MODE=CLI`：默认走 Codex CLI
+- `CLI_EXEC_MODE=YOLO`：尽量避免手机端审批中断
+- `CLI_HEARTBEAT_SECONDS=15`：长任务心跳间隔
+- `CLI_CWD`：CLI 工作根目录
+
+### 3. 启动源码版
 
 ```bash
 source venv/bin/activate
 python main.py
 ```
 
-### 构建二进制
+前台退出：
+
+```bash
+Ctrl+C
+```
+
+### 4. 调试日志
+
+```bash
+tail -f /tmp/gravity_main_debug.log
+```
+
+## 本地构建二进制
+
+### 关键原则
+
+正式发布二进制只在 `Ubuntu 20.04.6 LTS ARM` 上构建。  
+不要在 Ubuntu 22.04 / 24.04 上构建正式发布包，否则容易出现：
+
+```text
+GLIBC_2.35 not found
+```
+
+### 构建命令
 
 ```bash
 source venv/bin/activate
-pyinstaller --noconfirm --onefile --name antigravity-bridge \
-  --add-data "templates:templates" \
-  --hidden-import PIL._tkinter_finder \
-  main.py
+pyinstaller antigravity-bridge.spec
 ```
+
+构建产物：
+
+```bash
+dist/antigravity-bridge
+```
+
+### 部署到本机
+
+```bash
+pkill -9 -f "antigravity-bridge"
+cp -f /home/sw/antigravity-bridge /home/sw/antigravity-bridge.bak.$(date +%Y%m%d-%H%M%S)
+cp -f dist/antigravity-bridge /home/sw/antigravity-bridge
+chmod +x /home/sw/antigravity-bridge
+cd /home/sw
+./manage.sh restart
+```
+
+### 查看部署日志
+
+```bash
+cd /home/sw
+./manage.sh logs
+```
+
+## 推荐维护流程
+
+当前推荐流程：
+
+1. 在 Ubuntu 20.04 ARM 机器上修改源码
+2. 用源码版验证 Telegram 侧功能
+3. 本地 `pyinstaller` 构建二进制
+4. 本机替换 `/home/sw/antigravity-bridge`
+5. 再分发到其他 Ubuntu 20.04 / 22.04 / 24.04 ARM 机器
+
+当前不再把 GitHub-hosted Actions 作为正式构建来源。
 
 ## 项目结构
 
-```
+```text
 antigravity-Bridge/
-├── main.py                    # 主程序入口 (Telegram Bot + MCP Server + 监控线程)
+├── main.py
+├── manage.sh
+├── antigravity-bridge.spec
 ├── automation/
-│   ├── __init__.py
-│   └── gui_automation.py      # GUI 自动化模块 (图像匹配、点击、粘贴)
+│   ├── cli_automation.py
+│   └── gui_automation.py
 ├── mcp/
-│   ├── __init__.py
-│   └── server.py              # MCP Server 实现 (JSON-RPC 2.0 over stdio)
-├── templates/                 # 模板图片 (用于图像匹配)
-│   ├── input_box.png          # 输入框
-│   ├── Replying.png           # 回复中指示器
-│   ├── Retry.png              # 重试按钮
-│   ├── Upgrade.png            # 配额弹窗
-│   ├── accept_button.png      # Accept 按钮
-│   ├── accept_all.png         # Accept all 按钮
-│   ├── panel-ClaudeOpus.png   # Claude 模型面板
-│   ├── panel-Gemini.png       # Gemini 模型面板
-│   └── ...
-├── manage.sh                  # 部署管理脚本
-├── requirements.txt           # Python 依赖
-└── .env                       # 环境变量配置 (不纳入版本控制)
+│   └── server.py
+├── templates/
+├── requirements.txt
+└── .env
 ```
 
-## 架构说明
+## MCP
 
-### 运行模式
+项目保留 MCP Server，用于 IDE / Agent 内部直接发送 Telegram 回复。
 
-1. **Daemon 模式** (`manage.sh start`)：作为独立后台服务运行
-   - 启动 Telegram Bot Polling 监听消息
-   - 启动 Retry 按钮监控线程
-   - 启动 Upgrade 弹窗监控线程
-   - 启动 MCP Server（同进程）
+核心 MCP 工具：
 
-2. **MCP 模式** (IDE 通过 `mcp_config.json` 启动)：
-   - 仅启动 MCP Server，通过 stdin/stdout 通信
-   - 禁用 Telegram Polling 和 GUI 监控（避免与 Daemon 冲突）
-   - AI 助手通过 `reply_to_telegram` 工具发送消息
+- `reply_to_telegram`
 
-### MCP 工具
+## 补充文档
 
-| 工具名 | 说明 | 参数 |
-|--------|------|------|
-| `reply_to_telegram` | 发送消息到 Telegram | `text` (必填)、`chat_id` (可选) |
+迁移到新 Ubuntu 20.04 ARM 环境后，优先阅读：
 
-### MCP 集成配置
+- [AGENT_HANDOFF_OCI20.md](/home/sw/dev_root/antigravity-Bridge/AGENT_HANDOFF_OCI20.md)
 
-编辑 MCP 配置文件：
+## License
 
-```json
-{
-  "mcpServers": {
-    "antigravity-bridge": {
-      "command": "/绝对路径/antigravity-bridge",
-      "args": [],
-      "env": {
-        "TELEGRAM_BOT_TOKEN": "你的BotToken",
-        "TELEGRAM_CHAT_ID": "你的ChatID",
-        "DISPLAY": ":0"
-      }
-    }
-  }
-}
-```
-
-> **互斥运行**：Daemon 模式和 MCP 模式不应同时连接 Telegram Bot Polling，否则会导致冲突。MCP 模式下已自动禁用 Polling。
-
-## 许可证
-
-MIT License
+MIT
