@@ -247,6 +247,24 @@ cd /home/sw
 ./manage.sh logs
 ```
 
+## 常见问题与排错 (FAQ)
+
+### 1. 启动报错 `GLIBC_2.35 not found`
+**原因**：二进制包在 Ubuntu 22.04 或 24.04 (glibc 版本较高) 上编译产生，导致复制到 Ubuntu 20.04 (glibc 2.31) 上运行时向下不兼容。
+**解决**：**必须永远在 Ubuntu 20.04 ARM 环境下**进行 `pyinstaller` 打包构建，产出的二进制即可完美向上兼容所有的 Ubuntu 22.04 和 24.04。
+
+### 2. 部署脚本卡死在 `[INFO] 检测到现有 .env 配置文件`
+**原因**：你的 `.env` 文件里可能错误地混入了可执行命令（例如 `TELEGRAM_BOT_TOKEN=./manage.sh start`）。由于部署脚本使用 `source .env` 加载变量，未加引号包裹的启动命令会被当做脚本本身执行，从而导致在后台无限嵌套执行 `./manage.sh start`（发生 Fork Bomb 内存爆炸）。
+**解决**：立刻 `LC_ALL=C Ctrl+C` 打断，并使用 `nano .env` 检查删除所有非规范的变量组合，保持纯文本秘钥格式。
+
+### 3. Ubuntu 24.04 上出现 `pgrep: pattern that searches for process name longer than 15 characters will result in zero matches`
+**原因**：较新系统的 `pgrep` 对超长进程名限制更严，旧版脚本依赖正则匹配会失败或误杀（甚至抓到 `manage.sh` 本身）。
+**解决**：请确保您使用的 `manage.sh` 版本 >= `v1.9.7`，由于已经改写为严谨的 `ps aux | grep ...` 管道并带有自我排除逻辑，此问题已彻底修复。
+
+### 4. 部署卡死在 `[INFO] 正在配置 MCP...`
+**原因**：如果环境存在无响应的或配置错误的 X11 `DISPLAY` Socket（例如废弃的 TightVNC 端口），底层 `xdpyinfo` 探测器将被无限期挂起。
+**解决**：同样确保使用 >= `v1.9.7` 的脚本，内部调用已添加 `timeout 2` 超时保护，确保不会阻塞自动化进程。
+
 ## 推荐维护流程
 
 当前推荐流程：
