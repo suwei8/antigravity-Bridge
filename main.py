@@ -153,6 +153,7 @@ class AntigravityBridge:
         dp.add_handler(CommandHandler('mode', self.handle_mode_command))
         dp.add_handler(CommandHandler('cd', self.handle_cd_command))
         dp.add_handler(CommandHandler('status', self.handle_status_command))
+        dp.add_handler(CommandHandler('quota', self.handle_quota_command))
         dp.add_handler(CommandHandler('cancel', self.handle_cancel_command))
         dp.add_handler(CommandHandler('exit', self.handle_exit_command))
         dp.add_handler(CommandHandler('sessions', self.handle_sessions_command))
@@ -190,6 +191,7 @@ class AntigravityBridge:
                 BotCommand("mode", "🔄 切换模式 (gui/cli)"),
                 BotCommand("cd", "📂 切换 CLI 工作目录"),
                 BotCommand("status", "📊 查看 CLI 状态"),
+                BotCommand("quota", "💳 查询当前 Codex 配额"),
                 BotCommand("cancel", "🛑 终止当前 CLI 任务"),
                 BotCommand("exit", "🛑 退出当前任务"),
                 BotCommand("sessions", "🗂️ 查看最近会话"),
@@ -253,6 +255,7 @@ class AntigravityBridge:
             "/mode cli - 切换到 CLI 模式\n"
             "/cd <路径> - 切换 CLI 工作目录\n"
             "/status - 查看 CLI 当前状态\n"
+            "/quota - 查询当前 Codex 账号配额\n"
             "/cancel - 终止当前 CLI 任务\n"
             "/exit - 终止当前 CLI 任务\n"
             "/sessions - 查看最近会话\n"
@@ -372,6 +375,12 @@ class AntigravityBridge:
         if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
             return
         self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.get_status(chat_id))
+
+    def handle_quota_command(self, update: Update, context: CallbackContext):
+        chat_id = update.effective_chat.id
+        if chat_id not in self.ALLOWED_CHAT_IDS or not self.cli_bridge:
+            return
+        self.bot.send_message(chat_id=chat_id, text=self.cli_bridge.get_codex_quota())
 
     def handle_cancel_command(self, update: Update, context: CallbackContext):
         chat_id = update.effective_chat.id

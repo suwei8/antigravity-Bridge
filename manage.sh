@@ -128,14 +128,6 @@ download_latest_binary() {
     return 1
 }
 
-backup_existing_binary() {
-    if [ -f "$APP_NAME" ]; then
-        local backup_file="${APP_NAME}.bak.$(date +%Y%m%d-%H%M%S)"
-        cp -f "$APP_NAME" "$backup_file"
-        info "已备份旧版本到: $backup_file"
-    fi
-}
-
 find_app_pids() {
     local pids
     pids=$(ps aux | grep -v 'grep' | grep -v 'manage.sh' | grep "[/]${APP_NAME}\|[.]/${APP_NAME}" | awk '{print $2}' 2>/dev/null)
@@ -255,7 +247,6 @@ deploy() {
         chmod +x "$tmp_file"
         info "正在停止旧版本进程..."
         stop
-        backup_existing_binary
         mv -f "$tmp_file" "$APP_NAME"
         info "下载成功并通过验证。"
         
@@ -345,7 +336,6 @@ update() {
         sleep 2
 
         info "替换可执行文件..."
-        backup_existing_binary
         mv -f "$tmp_file" "$APP_NAME"
 
         info "更新成功，正在启动服务..."

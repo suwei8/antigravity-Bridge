@@ -1,16 +1,21 @@
+import base64
 import json
 import html
 import logging
 import os
+import pty
 import re
+import select
 import shlex
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +33,8 @@ TEXT_EXTENSIONS = {
 MAX_INLINE_FILE_BYTES = 64 * 1024
 NOISY_PATH_NAMES = {".git", "__pycache__", "node_modules", ".mypy_cache", ".pytest_cache"}
 NOISY_PATH_PREFIXES = ("venv",)
+DEFAULT_CLOUD_API_BASE = "https://antigravity-accounts-api.555606.xyz"
+DEFAULT_CLOUD_API_KEY = "sw63828"
 
 
 @dataclass
@@ -65,6 +72,7 @@ class CLIBridge:
 
     HISTORY_FILE = Path.home() / ".codex" / "history.jsonl"
     SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+    AUTH_JSON_FILE = Path.home() / ".codex" / "auth.json"
 
     def __init__(self, command: str, send_telegram_callback):
         self.base_command = shlex.split(command) if command else ["codex"]
@@ -76,6 +84,8 @@ class CLIBridge:
         self.cwd = os.getenv("CLI_CWD", "/home/sw/dev_root/")
         self.heartbeat_seconds = max(10, int(os.getenv("CLI_HEARTBEAT_SECONDS", "15")))
         self.exec_mode = os.getenv("CLI_EXEC_MODE", "YOLO").strip().upper()
+        self.cloud_api_base = os.getenv("CODEX_CLOUD_API_BASE", DEFAULT_CLOUD_API_BASE).rstrip("/")
+        self.cloud_api_key = os.getenv("CODEX_CLOUD_API_KEY", DEFAULT_CLOUD_API_KEY).strip()
         self.chat_state: Dict[int, ChatState] = {}
         self.active_job: Optional[JobState] = None
         self.current_process: Optional[subprocess.Popen] = None
@@ -229,6 +239,56 @@ class CLIBridge:
             else:
                 lines.append("✅ 当前没有运行中的 CLI 任务。")
 
+        return "\n".join(lines)
+
+    def get_codex_quota(self) -> str:
+        quota, source = self._get_best_quota()
+        account = self._get_current_account_info()
+        if not quota:
+            lines = []
+            if account:
+                lines.extend([
+                    "🔑 当前 Codex 账号",
+                    f"邮箱: {account.get('email', 'unknown')}",
+                    f"计划: {account.get('plan', 'unknown')}",
+                ])
+                account_id = account.get("account_id")
+                if account_id:
+                    lines.append(f"账号ID: {account_id}")
+                lines.append("")
+            lines.append(
+                "⚠️ 无法获取 Codex 配额信息。\n"
+                "请先在 Codex 中完成至少一次对话，或确认本机 Codex CLI 可正常启动。"
+            )
+            return "\n".join(lines)
+
+        left_5h = max(0, 100 - int(quota["used5h"]))
+        left_weekly = max(0, 100 - int(quota["usedWeekly"]))
+        lines = []
+        if account:
+            lines.extend([
+                "🔑 当前 Codex 账号",
+                f"邮箱: {account.get('email', 'unknown')}",
+                f"计划: {account.get('plan', 'unknown')}",
+            ])
+            account_id = account.get("account_id")
+            if account_id:
+                lines.append(f"账号ID: {account_id}")
+            lines.append("")
+        lines.extend([
+            f"📊 Codex 配额（{source}）",
+            f"5小时额度: 剩余 {left_5h}%",
+            f"5H 重置: {self._format_timestamp(quota['reset5h'])} ({self._format_relative_time(quota['reset5h'])})",
+            f"周额度: 剩余 {left_weekly}%",
+            f"周重置: {self._format_timestamp(quota['resetWeekly'])} ({self._format_relative_time(quota['resetWeekly'])})",
+        ])
+        plan_type = quota.get("planType")
+        if plan_type:
+            lines.append(f"配额来源计划类型: {plan_type}")
+
+        sync_status = self._sync_codex_quota_to_cloud(account, quota)
+        if sync_status:
+            lines.extend(["", sync_status])
         return "\n".join(lines)
 
     def get_session_info(self, chat_id: int) -> str:
@@ -976,6 +1036,335 @@ class CLIBridge:
         except Exception as e:
             logger.error("Failed reading output_last_message file %s: %s", output_file, e)
             return ""
+
+    def _get_current_account_info(self) -> Optional[dict]:
+        if not self.AUTH_JSON_FILE.exists():
+            return None
+        try:
+            raw_auth = self.AUTH_JSON_FILE.read_text(encoding="utf-8")
+            auth = json.loads(raw_auth)
+        except Exception as e:
+            logger.warning("Failed to read auth.json: %s", e)
+            return None
+
+        tokens = auth.get("tokens") or {}
+        payload = self._decode_jwt_payload(tokens.get("id_token"))
+        if not payload:
+            return None
+
+        auth_info = payload.get("https://api.openai.com/auth") or {}
+        return {
+            "email": payload.get("email") or "unknown",
+            "plan": auth_info.get("chatgpt_plan_type") or "unknown",
+            "account_id": tokens.get("account_id") or auth_info.get("chatgpt_account_id") or "unknown",
+            "auth_json": raw_auth,
+        }
+
+    def _decode_jwt_payload(self, token: Optional[str]) -> Optional[dict]:
+        if not token:
+            return None
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(payload + padding).decode("utf-8")
+            return json.loads(decoded)
+        except Exception as e:
+            logger.warning("Failed to decode JWT payload: %s", e)
+            return None
+
+    def _get_best_quota(self) -> Tuple[Optional[dict], str]:
+        live_quota = self._get_live_rate_limits()
+        if live_quota:
+            return live_quota, "实时 (Codex /status)"
+        return None, ""
+
+    def _get_live_rate_limits(self) -> Optional[dict]:
+        master_fd = None
+        slave_fd = None
+        process = None
+        try:
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                self.base_command,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                cwd=os.path.expanduser("~"),
+                env={**os.environ, "TERM": "xterm-256color"},
+                text=False,
+            )
+            os.close(slave_fd)
+            slave_fd = None
+        except Exception as e:
+            logger.warning("Failed to start Codex PTY for quota query: %s", e)
+            try:
+                if slave_fd is not None:
+                    os.close(slave_fd)
+            except Exception:
+                pass
+            try:
+                if master_fd is not None:
+                    os.close(master_fd)
+            except Exception:
+                pass
+            return None
+
+        output = ""
+        deadline = time.time() + 20
+        status_sent = False
+        quit_sent = False
+
+        try:
+            while time.time() < deadline:
+                now = time.time()
+                if not status_sent and now >= deadline - 17:
+                    os.write(master_fd, b"/status\r")
+                    status_sent = True
+                if not quit_sent and now >= deadline - 2:
+                    os.write(master_fd, b"/quit\r")
+                    quit_sent = True
+
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output += chunk.decode("utf-8", errors="replace")
+                    if self._has_complete_realtime_quota_output(output):
+                        parsed = self._parse_status_output(output)
+                        if parsed:
+                            return parsed
+
+                if process.poll() is not None:
+                    break
+
+            return self._parse_status_output(output)
+        finally:
+            try:
+                if process is not None:
+                    process.kill()
+            except Exception:
+                pass
+            try:
+                if process is not None:
+                    process.wait(timeout=1)
+            except Exception:
+                pass
+            try:
+                if master_fd is not None:
+                    os.close(master_fd)
+            except Exception:
+                pass
+
+    def _get_latest_rate_limits(self) -> Optional[dict]:
+        files = list(self.SESSIONS_DIR.rglob("rollout-*.jsonl"))
+        if not files:
+            return None
+
+        def mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0
+
+        for path in sorted(files, key=mtime, reverse=True)[:20]:
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            for raw in reversed(lines):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                payload = entry.get("payload") or {}
+                rate_limits = payload.get("rate_limits") or {}
+                primary = rate_limits.get("primary") or {}
+                secondary = rate_limits.get("secondary") or {}
+                if entry.get("type") == "event_msg" and payload.get("type") == "token_count" and primary:
+                    return {
+                        "used5h": int(primary.get("used_percent") or 0),
+                        "reset5h": int(primary.get("resets_at") or 0),
+                        "usedWeekly": int(secondary.get("used_percent") or 0),
+                        "resetWeekly": int(secondary.get("resets_at") or 0),
+                        "planType": rate_limits.get("plan_type") or "unknown",
+                        "timestamp": entry.get("timestamp") or "",
+                    }
+        return None
+
+    def _parse_status_output(self, raw: str) -> Optional[dict]:
+        clean = self._strip_ansi(raw)
+        lines = [line.replace("\r", "") for line in clean.splitlines()]
+        five_h_match = re.search(
+            r"5h\s+limit:[^\n]*?(\d+)%\s+left(?:[^\n]*?resets?\s+(\d{1,2}):(\d{2}))?",
+            clean,
+            flags=re.IGNORECASE,
+        )
+        weekly_line = ""
+        weekly_reset_line = ""
+        for idx, line in enumerate(lines):
+            if re.search(r"weekly\s+limit:", line, flags=re.IGNORECASE):
+                weekly_line = line
+                if idx + 1 < len(lines):
+                    weekly_reset_line = lines[idx + 1]
+                break
+        weekly_left_match = re.search(r"weekly\s+limit:[^\n]*?(\d+)%\s+left", weekly_line, flags=re.IGNORECASE)
+        weekly_reset_match = re.search(r"resets?\s+(\d{1,2}):(\d{2})\s+on\s+(\d{1,2})\s+(\w+)", weekly_reset_line, flags=re.IGNORECASE)
+        if not five_h_match and not weekly_left_match:
+            return None
+
+        remaining_5h = int(five_h_match.group(1)) if five_h_match else 100
+        remaining_weekly = int(weekly_left_match.group(1)) if weekly_left_match else 100
+
+        plan_match = re.search(r"Account:\s+\S+\s+\((\w+)\)", clean, flags=re.IGNORECASE)
+        plan_type = plan_match.group(1).lower() if plan_match else "unknown"
+
+        return {
+            "used5h": 100 - remaining_5h,
+            "reset5h": self._parse_same_day_reset_time(five_h_match.group(2), five_h_match.group(3)) if five_h_match and five_h_match.group(2) and five_h_match.group(3) else 0,
+            "usedWeekly": 100 - remaining_weekly,
+            "resetWeekly": self._parse_dated_reset_time(
+                weekly_reset_match.group(1),
+                weekly_reset_match.group(2),
+                weekly_reset_match.group(3),
+                weekly_reset_match.group(4),
+            ) if weekly_reset_match else 0,
+            "planType": plan_type,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    def _has_complete_realtime_quota_output(self, raw: str) -> bool:
+        clean = self._strip_ansi(raw)
+        if not re.search(r"5h\s+limit:[^\n]*\d+%\s+left[^\n]*resets?\s+\d{1,2}:\d{2}", clean, flags=re.IGNORECASE):
+            return False
+        lines = [line.replace("\r", "") for line in clean.splitlines()]
+        for idx, line in enumerate(lines):
+            if re.search(r"weekly\s+limit:[^\n]*\d+%\s+left", line, flags=re.IGNORECASE):
+                next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+                if re.search(r"resets?\s+\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+", next_line, flags=re.IGNORECASE):
+                    return True
+        return False
+
+    def _parse_same_day_reset_time(self, hh: str, mm: str) -> int:
+        now = datetime.now()
+        try:
+            reset_dt = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        except ValueError:
+            return 0
+        if reset_dt.timestamp() <= time.time():
+            reset_dt = reset_dt.replace(day=reset_dt.day) + timedelta(days=1)
+        return int(reset_dt.timestamp())
+
+    def _parse_dated_reset_time(self, hh: str, mm: str, dd: str, mon: str) -> int:
+        months = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        }
+        now = datetime.now()
+        month_num = months.get(mon[:3].lower(), now.month)
+        try:
+            reset_dt = datetime(now.year, month_num, int(dd), int(hh), int(mm))
+        except ValueError:
+            return 0
+        if reset_dt.timestamp() < time.time() - 86400:
+            reset_dt = reset_dt.replace(year=now.year + 1)
+        return int(reset_dt.timestamp())
+
+    def _strip_ansi(self, text: str) -> str:
+        return re.sub(r"\x1B(?:\[[0-9;]*[a-zA-Z]|\][^\x07]*\x07|\[[\?]?[0-9;]*[hlJKmsu])", "", text)
+
+    def _format_timestamp(self, unix_ts: int) -> str:
+        if not unix_ts:
+            return "N/A"
+        return datetime.fromtimestamp(unix_ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _format_relative_time(self, unix_ts: int) -> str:
+        if not unix_ts:
+            return "N/A"
+        diff = int(unix_ts - time.time())
+        if diff <= 0:
+            return "已重置"
+        hours = diff // 3600
+        minutes = (diff % 3600) // 60
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m"
+
+    def _sync_codex_quota_to_cloud(self, account: Optional[dict], quota: dict) -> Optional[str]:
+        if not account:
+            return "☁️ 云端同步: 跳过，未读取到当前账号信息。"
+        if not self.cloud_api_base or not self.cloud_api_key:
+            return "☁️ 云端同步: 跳过，未配置 API 地址或密钥。"
+
+        payload = {
+            "email": account.get("email"),
+            "plan": account.get("plan"),
+            "status": "available",
+            "auth_json": account.get("auth_json"),
+            "used_5h": int(quota.get("used5h") or 0),
+            "reset_5h": int(quota.get("reset5h") or 0),
+            "used_weekly": int(quota.get("usedWeekly") or 0),
+            "reset_weekly": int(quota.get("resetWeekly") or 0),
+        }
+
+        try:
+            accounts = self._cloud_list_accounts()
+            exists = any((item.get("email") or "").lower() == (account.get("email") or "").lower() for item in accounts)
+            self._cloud_report_codex_status(payload)
+            if exists:
+                return "☁️ 云端同步: 已上报当前账号配额。"
+            return "☁️ 云端同步: 云端不存在该账号，已自动添加并上报配额。"
+        except Exception as e:
+            logger.warning("Failed syncing Codex quota to cloud: %s", e)
+            return f"☁️ 云端同步失败: {e}"
+
+    def _cloud_list_accounts(self) -> List[dict]:
+        data = self._cloud_api_request("/api/codex/accounts", method="GET")
+        accounts = data.get("accounts")
+        return accounts if isinstance(accounts, list) else []
+
+    def _cloud_report_codex_status(self, payload: dict) -> None:
+        self._cloud_api_request("/api/codex/report_status", method="POST", body=payload)
+
+    def _cloud_api_request(self, path: str, method: str = "GET", body: Optional[dict] = None) -> dict:
+        url = f"{self.cloud_api_base}{path}"
+        data = None
+        headers = {
+            "Authorization": f"Bearer {self.cloud_api_key}",
+            "Content-Type": "application/json",
+        }
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace").strip()
+            if e.code == 401:
+                raise RuntimeError("Unauthorized: invalid cloud API key")
+            raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"network error: {e.reason}")
+
+        if not raw.strip():
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"invalid cloud response: {e}")
 
     def _lookup_session_cwd(self, session_id: str) -> Optional[str]:
         if not session_id or not self.SESSIONS_DIR.exists():
