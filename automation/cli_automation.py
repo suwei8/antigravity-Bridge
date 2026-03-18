@@ -262,8 +262,10 @@ class CLIBridge:
             )
             return "\n".join(lines)
 
-        left_5h = max(0, 100 - int(quota["used5h"]))
-        left_weekly = max(0, 100 - int(quota["usedWeekly"]))
+        has_5h_limit = bool(quota.get("has5hLimit"))
+        has_weekly_limit = bool(quota.get("hasWeeklyLimit"))
+        left_5h = max(0, 100 - int(quota["used5h"])) if has_5h_limit else None
+        left_weekly = max(0, 100 - int(quota["usedWeekly"])) if has_weekly_limit else None
         lines = []
         if account:
             lines.extend([
@@ -275,13 +277,17 @@ class CLIBridge:
             if account_id:
                 lines.append(f"账号ID: {account_id}")
             lines.append("")
-        lines.extend([
-            f"📊 Codex 配额（{source}）",
-            f"5小时额度: 剩余 {left_5h}%",
-            f"5H 重置: {self._format_timestamp(quota['reset5h'])} ({self._format_relative_time(quota['reset5h'])})",
-            f"周额度: 剩余 {left_weekly}%",
-            f"周重置: {self._format_timestamp(quota['resetWeekly'])} ({self._format_relative_time(quota['resetWeekly'])})",
-        ])
+        lines.append(f"📊 Codex 配额（{source}）")
+        if has_5h_limit:
+            lines.extend([
+                f"5小时额度: 剩余 {left_5h}%",
+                f"5H 重置: {self._format_timestamp(quota['reset5h'])} ({self._format_relative_time(quota['reset5h'])})",
+            ])
+        if has_weekly_limit:
+            lines.extend([
+                f"周额度: 剩余 {left_weekly}%",
+                f"周重置: {self._format_timestamp(quota['resetWeekly'])} ({self._format_relative_time(quota['resetWeekly'])})",
+            ])
         plan_type = quota.get("planType")
         if plan_type:
             lines.append(f"配额来源计划类型: {plan_type}")
@@ -1079,6 +1085,9 @@ class CLIBridge:
         live_quota = self._get_live_rate_limits()
         if live_quota:
             return live_quota, "实时 (Codex /status)"
+        latest_quota = self._get_latest_rate_limits()
+        if latest_quota:
+            return latest_quota, "最近一次会话记录"
         return None, ""
 
     def _get_live_rate_limits(self) -> Optional[dict]:
@@ -1192,12 +1201,14 @@ class CLIBridge:
                 rate_limits = payload.get("rate_limits") or {}
                 primary = rate_limits.get("primary") or {}
                 secondary = rate_limits.get("secondary") or {}
-                if entry.get("type") == "event_msg" and payload.get("type") == "token_count" and primary:
+                if entry.get("type") == "event_msg" and payload.get("type") == "token_count" and (primary or secondary):
                     return {
                         "used5h": int(primary.get("used_percent") or 0),
                         "reset5h": int(primary.get("resets_at") or 0),
                         "usedWeekly": int(secondary.get("used_percent") or 0),
                         "resetWeekly": int(secondary.get("resets_at") or 0),
+                        "has5hLimit": bool(primary),
+                        "hasWeeklyLimit": bool(secondary),
                         "planType": rate_limits.get("plan_type") or "unknown",
                         "timestamp": entry.get("timestamp") or "",
                     }
@@ -1220,7 +1231,11 @@ class CLIBridge:
                     weekly_reset_line = lines[idx + 1]
                 break
         weekly_left_match = re.search(r"weekly\s+limit:[^\n]*?(\d+)%\s+left", weekly_line, flags=re.IGNORECASE)
-        weekly_reset_match = re.search(r"resets?\s+(\d{1,2}):(\d{2})\s+on\s+(\d{1,2})\s+(\w+)", weekly_reset_line, flags=re.IGNORECASE)
+        weekly_reset_match = re.search(
+            r"resets?\s+(\d{1,2}):(\d{2})\s+on\s+(\d{1,2})\s+(\w+)",
+            f"{weekly_line} {weekly_reset_line}",
+            flags=re.IGNORECASE,
+        )
         if not five_h_match and not weekly_left_match:
             return None
 
@@ -1240,21 +1255,24 @@ class CLIBridge:
                 weekly_reset_match.group(3),
                 weekly_reset_match.group(4),
             ) if weekly_reset_match else 0,
+            "has5hLimit": bool(five_h_match),
+            "hasWeeklyLimit": bool(weekly_left_match),
             "planType": plan_type,
             "timestamp": datetime.utcnow().isoformat(),
         }
 
     def _has_complete_realtime_quota_output(self, raw: str) -> bool:
         clean = self._strip_ansi(raw)
-        if not re.search(r"5h\s+limit:[^\n]*\d+%\s+left[^\n]*resets?\s+\d{1,2}:\d{2}", clean, flags=re.IGNORECASE):
-            return False
         lines = [line.replace("\r", "") for line in clean.splitlines()]
+        has_complete_5h = bool(
+            re.search(r"5h\s+limit:[^\n]*\d+%\s+left[^\n]*resets?\s+\d{1,2}:\d{2}", clean, flags=re.IGNORECASE)
+        )
         for idx, line in enumerate(lines):
             if re.search(r"weekly\s+limit:[^\n]*\d+%\s+left", line, flags=re.IGNORECASE):
                 next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
-                if re.search(r"resets?\s+\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+", next_line, flags=re.IGNORECASE):
+                if re.search(r"resets?\s+\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+", f"{line} {next_line}", flags=re.IGNORECASE):
                     return True
-        return False
+        return has_complete_5h
 
     def _parse_same_day_reset_time(self, hh: str, mm: str) -> int:
         now = datetime.now()
