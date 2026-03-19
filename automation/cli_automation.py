@@ -1,4 +1,5 @@
 import base64
+import fcntl
 import json
 import html
 import logging
@@ -12,8 +13,10 @@ import subprocess
 import tempfile
 import threading
 import time
+import termios
 import urllib.error
 import urllib.request
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +38,8 @@ NOISY_PATH_NAMES = {".git", "__pycache__", "node_modules", ".mypy_cache", ".pyte
 NOISY_PATH_PREFIXES = ("venv",)
 DEFAULT_CLOUD_API_BASE = "https://antigravity-accounts-api.555606.xyz"
 DEFAULT_CLOUD_API_KEY = "sw63828"
+DEFAULT_PTY_ROWS = 40
+DEFAULT_PTY_COLS = 120
 
 
 @dataclass
@@ -1096,6 +1101,7 @@ class CLIBridge:
         process = None
         try:
             master_fd, slave_fd = pty.openpty()
+            self._ensure_pty_size(slave_fd)
             process = subprocess.Popen(
                 self.base_command,
                 stdin=slave_fd,
@@ -1273,6 +1279,16 @@ class CLIBridge:
                 if re.search(r"resets?\s+\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+", f"{line} {next_line}", flags=re.IGNORECASE):
                     return True
         return has_complete_5h
+
+    def _ensure_pty_size(self, fd: int) -> None:
+        try:
+            size = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+            rows, cols, _, _ = struct.unpack("HHHH", size)
+            if rows > 0 and cols > 0:
+                return
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", DEFAULT_PTY_ROWS, DEFAULT_PTY_COLS, 0, 0))
+        except Exception as e:
+            logger.debug("Failed to initialize PTY size for quota query: %s", e)
 
     def _parse_same_day_reset_time(self, hh: str, mm: str) -> int:
         now = datetime.now()
